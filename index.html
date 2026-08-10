@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>The Ashen Gate — a boss duel</title>
+<title>The Ashen Gate</title>
 <style>
   html,body{margin:0;padding:0;height:100%;background:#05060a;overflow:hidden;}
   body{display:flex;align-items:center;justify-content:center;}
@@ -16,12 +16,15 @@
 'use strict';
 /* =========================================================================
    THE ASHEN GATE — a souls-like boss duel in one file.
-   Boss: VELGRIM, WARDEN OF THE ASHEN GATE
+   Boss: ALDRIC, WHO WAS GIVEN THE BLADE.
    ========================================================================= */
 
 const W = 960, H = 540;
 const ARENA = { x: 64, y: 64, w: W - 128, h: H - 128 };
-const ACCENT = '#ff9e2c';           // reserved for boss telegraphs
+const GATE = { x: W / 2, y: 26 };     // the threshold, beyond the top wall
+const RING = { x: 336, y: 338 };      // the worn practice ring
+const ACCENT = '#ff9e2c';             // ember — reserved for boss telegraphs & fire
+const COOL = '#9fc7ff';               // Nomad's one cool accent
 const canvas = document.getElementById('c');
 const RS = Math.min(2, window.devicePixelRatio || 1);
 canvas.width = W * RS; canvas.height = H * RS;
@@ -44,6 +47,14 @@ const dist = (ax, ay, bx, by) => Math.sqrt(dist2(ax, ay, bx, by));
 function angDiff(a, b) { let d = (b - a) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; }
 function turnToward(cur, target, maxStep) { const d = angDiff(cur, target); return cur + clamp(d, -maxStep, maxStep); }
 const rand = (a, b) => a + Math.random() * (b - a);
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
 
 /* =========================================================================
    AUDIO — all synthesized, created lazily, resumed on any user gesture.
@@ -119,7 +130,31 @@ const sfx = {
     [659, 830, 988, 1318].forEach((f, i) => _tone(ac, 'sine', f, f, 1.0, 0.22, t + i * 0.14));
     _tone(ac, 'sine', 329, 329, 1.8, 0.15, t);
   }); },
-  fog() { this._run((ac, t) => _noise(ac, 0.9, 'lowpass', 500, 150, 0.25, t)); }
+  fog() { this._run((ac, t) => _noise(ac, 0.9, 'lowpass', 500, 150, 0.25, t)); },
+  parry() { this._run((ac, t) => {
+    _tone(ac, 'square', 1400, 950, 0.09, 0.28, t);
+    _tone(ac, 'sine', 2300, 1750, 0.16, 0.22, t);
+    _tone(ac, 'sine', 320, 150, 0.1, 0.3, t);
+    _noise(ac, 0.08, 'highpass', 2600, 4200, 0.3, t);
+  }); },
+  block() { this._run((ac, t) => {
+    _tone(ac, 'sine', 210, 90, 0.14, 0.45, t);
+    _tone(ac, 'square', 360, 250, 0.05, 0.1, t);
+    _noise(ac, 0.1, 'lowpass', 1300, 350, 0.3, t);
+  }); },
+  guardBreak() { this._run((ac, t) => {
+    _tone(ac, 'sawtooth', 240, 65, 0.35, 0.4, t);
+    _tone(ac, 'sine', 110, 40, 0.3, 0.5, t);
+    _noise(ac, 0.3, 'bandpass', 900, 200, 0.5, t);
+  }); },
+  exposed() { this._run((ac, t) => {
+    [660, 990, 1320].forEach((f, i) => _tone(ac, 'sine', f, f * 1.01, 0.8, 0.2, t + i * 0.11));
+    _noise(ac, 0.5, 'highpass', 3000, 5000, 0.08, t);
+  }); },
+  scrapeOne() { this._run((ac, t) => {
+    _noise(ac, 0.28, 'bandpass', 900 + Math.random() * 500, 500, 0.2, t);
+    _tone(ac, 'sawtooth', 220 + Math.random() * 120, 140, 0.2, 0.05, t);
+  }); }
 };
 
 /* =========================================================================
@@ -138,7 +173,7 @@ function rumble(ms, strong, weak) {
 
 /* =========================================================================
    INPUT — controller primary, keyboard/mouse fallback, unified edges +
-   a 150ms buffer for attacks and rolls.
+   a 150ms buffer for attacks/rolls/parries.
    ========================================================================= */
 const BUFFER_MS = 150;
 const Input = {
@@ -147,11 +182,11 @@ const Input = {
   prevPadB: [], prevRT: false,
   kbEdges: {},                  // one-frame edges from key/mouse events
   // unified per-frame edges:
-  light: false, heavy: false, lock: false, flask: false, confirm: false,
+  light: false, heavy: false, lock: false, flask: false, confirm: false, parry: false,
   moveX: 0, moveY: 0, moveMag: 0,
-  sprint: false,
+  sprint: false, blockHeld: false,
   dodgeWasDown: false, dodgeHoldT: 0, dodgeSprinted: false,
-  buffer: null,                 // {act:'roll'|'light'|'heavy', t: ms}
+  buffer: null,                 // {act:'roll'|'light'|'heavy'|'parry', t: ms}
 
   setBuffer(act) { this.buffer = { act, t: performance.now() }; },
   peekBuffer() {
@@ -161,7 +196,7 @@ const Input = {
   consumeBuffer() { const a = this.peekBuffer(); this.buffer = null; return a; },
 
   poll(rdt) {
-    this.light = this.heavy = this.lock = this.flask = this.confirm = false;
+    this.light = this.heavy = this.lock = this.flask = this.confirm = this.parry = false;
 
     /* ---- gamepad (polled; buttons are not event-driven) ---- */
     let gp = null;
@@ -171,7 +206,7 @@ const Input = {
     } catch (e) {}
     this.pad = gp;
 
-    let padDodgeDown = false;
+    let padDodgeDown = false, padBlock = false;
     let sx = 0, sy = 0, smag = 0;
     if (gp) {
       const b = gp.buttons || [];
@@ -201,6 +236,8 @@ const Input = {
       if (edge(11)) this.lock = true;                        // R3
       if (edge(2)) this.flask = true;                        // X / Square
       if (edge(0) || edge(9)) this.confirm = true;           // A or Start
+      if (edge(6)) this.parry = true;                        // L2 / LT (analog-safe)
+      padBlock = bd(4);                                      // L1 / LB — hold to guard
       padDodgeDown = bd(1);                                  // B / Circle
 
       const nb = [];
@@ -223,7 +260,9 @@ const Input = {
     if (this.kbEdges.lock) this.lock = true;
     if (this.kbEdges.flask) this.flask = true;
     if (this.kbEdges.confirm) this.confirm = true;
+    if (this.kbEdges.parry) this.parry = true;
     const kbDodgeDown = !!this.keys['Space'];
+    const kbBlock = !!(this.keys['ShiftLeft'] || this.keys['ShiftRight']);
     this.kbEdges = {};
 
     /* ---- merge movement (pad wins if it has input) ---- */
@@ -242,9 +281,11 @@ const Input = {
       this.sprint = false;
     }
     this.dodgeWasDown = down;
+    this.blockHeld = padBlock || kbBlock;
 
     if (this.light) this.setBuffer('light');
     if (this.heavy) this.setBuffer('heavy');
+    if (this.parry) this.setBuffer('parry');
   }
 };
 
@@ -255,6 +296,7 @@ window.addEventListener('keydown', e => {
   Input.keys[e.code] = true;
   if (e.code === 'KeyQ') Input.kbEdges.lock = true;
   if (e.code === 'KeyE') Input.kbEdges.flask = true;
+  if (e.code === 'KeyF') Input.kbEdges.parry = true;
   if (e.code === 'Enter') Input.kbEdges.confirm = true;
 });
 window.addEventListener('keyup', e => { Input.keys[e.code] = false; });
@@ -268,8 +310,270 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 window.addEventListener('gamepadconnected', () => { Input.device = 'pad'; AudioSys.ensure(); });
 
 /* =========================================================================
+   PRE-RENDERED ART — glow sprites, fog sprite, and the arena's still-life
+   detail are baked ONCE at load, then blitted every frame.
+   ========================================================================= */
+function makeGlow(r, g, b) {
+  const s = document.createElement('canvas');
+  s.width = s.height = 64;
+  const c = s.getContext('2d');
+  const grad = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, `rgba(${r},${g},${b},0.85)`);
+  grad.addColorStop(0.45, `rgba(${r},${g},${b},0.3)`);
+  grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  c.fillStyle = grad;
+  c.fillRect(0, 0, 64, 64);
+  return s;
+}
+const GLOW_EMBER = makeGlow(255, 158, 44);
+const GLOW_BLUE = makeGlow(159, 199, 255);
+const GLOW_GOLD = makeGlow(232, 193, 90);
+
+const FOG_SPRITE = (() => {
+  const s = document.createElement('canvas');
+  s.width = s.height = 64;
+  const c = s.getContext('2d');
+  const g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(150,165,205,1)');
+  g.addColorStop(1, 'rgba(150,165,205,0)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, 64, 64);
+  return s;
+})();
+
+/* shared sword profile — Nomad's blade and the five fallen ones are the SAME sword */
+function drawSwordProfile(c, len, opts) {
+  opts = opts || {};
+  const white = opts.white;
+  c.fillStyle = white ? '#ffffff' : (opts.flat ? opts.flat : '#4a3b2c');
+  c.fillRect(-8, -1.8, 8, 3.6);
+  c.beginPath(); c.arc(-9, 0, 2.4, 0, Math.PI * 2); c.fill();
+  c.fillStyle = white ? '#ffffff' : (opts.flat ? opts.flat : '#6e6046');
+  c.fillRect(-1.5, -7, 3, 14);
+  if (white) c.fillStyle = '#ffffff';
+  else if (opts.flat) c.fillStyle = opts.flat;
+  else {
+    const g = c.createLinearGradient(0, -3.5, 0, 3.5);
+    g.addColorStop(0, '#f4f7ff'); g.addColorStop(0.5, '#c3cddf'); g.addColorStop(1, '#8f9ab0');
+    c.fillStyle = g;
+  }
+  c.beginPath();
+  c.moveTo(1.5, -3.2); c.lineTo(len - 8, -2.4); c.lineTo(len, 0); c.lineTo(len - 8, 2.4); c.lineTo(1.5, 3.2);
+  c.closePath(); c.fill();
+  if (!white && !opts.flat) {
+    c.strokeStyle = 'rgba(255,255,255,0.55)';
+    c.lineWidth = 0.8;
+    c.beginPath(); c.moveTo(3, 0); c.lineTo(len - 7, 0); c.stroke();
+  }
+}
+
+/* procedural dead-script glyph strokes — angular marks, never letters */
+function makeGlyph(rr, size, disorder) {
+  const strokes = [];
+  const n = 2 + Math.floor(rr() * 3);
+  const j = () => (rr() - 0.5) * size * disorder * 1.6;
+  strokes.push([j(), -size / 2 + j(), j(), size / 2 + j()]);
+  for (let i = 1; i < n; i++) {
+    const y0 = -size / 2 + rr() * size;
+    const dir = rr() < 0.5 ? 1 : -1;
+    strokes.push([j(), y0 + j(), dir * size * (0.4 + rr() * 0.5) + j(), y0 + j()]);
+  }
+  return strokes;
+}
+function strokeGlyph(c, glyph, x, y, alpha, col, lw) {
+  c.strokeStyle = col || `rgba(178,172,160,${alpha})`;
+  c.lineWidth = lw || 1;
+  for (const s of glyph) { c.beginPath(); c.moveTo(x + s[0], y + s[1]); c.lineTo(x + s[2], y + s[3]); c.stroke(); }
+}
+
+/* ---------- the arena, baked once: gate, pillars, fallen swords, the
+   tally, the dead-script writing, the worn practice ring ---------- */
+const BRAZIERS = [
+  [ARENA.x + 34, ARENA.y + 34], [ARENA.x + ARENA.w - 34, ARENA.y + 34],
+  [ARENA.x + 34, ARENA.y + ARENA.h - 34], [ARENA.x + ARENA.w - 34, ARENA.y + ARENA.h - 34]
+];
+const ARENA_BAKE = (() => {
+  const s = document.createElement('canvas');
+  s.width = W; s.height = H;
+  const c = s.getContext('2d');
+  const rr = mulberry32(90210);
+
+  // ---- floor: dark stone with per-stone shade + cracks (unchanged base look) ----
+  c.fillStyle = '#0b0d12';
+  c.fillRect(0, 0, W, H);
+  const g = c.createRadialGradient(W / 2, H / 2, 60, W / 2, H / 2, 480);
+  g.addColorStop(0, '#232939'); g.addColorStop(0.7, '#191e2b'); g.addColorStop(1, '#10131c');
+  c.fillStyle = g;
+  c.fillRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h);
+  c.strokeStyle = 'rgba(255,255,255,0.028)';
+  c.lineWidth = 1;
+  for (let gx = ARENA.x + 54; gx < ARENA.x + ARENA.w; gx += 54) { c.beginPath(); c.moveTo(gx, ARENA.y); c.lineTo(gx, ARENA.y + ARENA.h); c.stroke(); }
+  for (let gy = ARENA.y + 54; gy < ARENA.y + ARENA.h; gy += 54) { c.beginPath(); c.moveTo(ARENA.x, gy); c.lineTo(ARENA.x + ARENA.w, gy); c.stroke(); }
+  for (let i = 0; i < 26; i++) {
+    const x = rr() * ARENA.w + ARENA.x, y = rr() * ARENA.h + ARENA.y;
+    const a = rr() * Math.PI * 2, l = 14 + rr() * 46;
+    c.strokeStyle = 'rgba(255,255,255,0.07)'; c.lineWidth = 1;
+    c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); c.stroke();
+  }
+
+  // ---- ritual sigil at the arena's heart ----
+  c.save();
+  c.translate(W / 2, H / 2);
+  c.strokeStyle = 'rgba(150,160,190,0.1)'; c.lineWidth = 2;
+  c.beginPath(); c.arc(0, 0, 122, 0, Math.PI * 2); c.stroke();
+  c.beginPath(); c.arc(0, 0, 112, 0, Math.PI * 2); c.stroke();
+  c.beginPath(); c.arc(0, 0, 58, 0, Math.PI * 2); c.stroke();
+  c.strokeStyle = 'rgba(255,158,44,0.09)'; c.lineWidth = 1.5;
+  c.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + (i * 4 * Math.PI * 2) / 5;
+    const x = Math.cos(a) * 112, y = Math.sin(a) * 112;
+    i === 0 ? c.moveTo(x, y) : c.lineTo(x, y);
+  }
+  c.closePath(); c.stroke();
+  for (let i = 0; i < 22; i++) {
+    const a = (i / 22) * Math.PI * 2;
+    c.save(); c.translate(Math.cos(a) * 112, Math.sin(a) * 112); c.rotate(a + Math.PI / 2);
+    strokeGlyph(c, makeGlyph(rr, 8, 0.25), 0, 0, 0.16, 'rgba(122,90,58,0.22)');
+    c.restore();
+  }
+  c.restore();
+
+  // ---- the worn practice ring: two foot-worn patches facing each other ----
+  c.save();
+  c.translate(RING.x, RING.y);
+  for (const sgn of [-1, 1]) {
+    c.save(); c.translate(sgn * 36, 0); c.rotate(sgn * 0.15);
+    const pg = c.createRadialGradient(0, 0, 2, 0, 0, 26);
+    pg.addColorStop(0, 'rgba(180,178,172,0.10)'); pg.addColorStop(1, 'rgba(180,178,172,0)');
+    c.fillStyle = pg;
+    c.beginPath(); c.ellipse(0, 0, 24, 17, 0, 0, Math.PI * 2); c.fill();
+    c.restore();
+  }
+  c.strokeStyle = 'rgba(160,158,150,0.08)'; c.lineWidth = 1.2;
+  for (let i = 0; i < 9; i++) {
+    const a0 = rr() * Math.PI * 2, r0 = 10 + rr() * 42;
+    c.beginPath(); c.arc((rr() - 0.5) * 70, (rr() - 0.5) * 30, r0, a0, a0 + 0.4 + rr() * 0.5); c.stroke();
+  }
+  c.restore();
+
+  // ---- five fallen swords, identical to Nomad's, pointing at the gate ----
+  const swordSpots = [[430, 322], [516, 296], [606, 356], [386, 246], [560, 236]];
+  for (const [sx0, sy0] of swordSpots) {
+    const a = Math.atan2(GATE.y - sy0, GATE.x - sx0);
+    c.save();
+    c.translate(sx0, sy0);
+    c.fillStyle = 'rgba(0,0,0,0.35)';
+    c.beginPath(); c.ellipse(0, 3, 30, 7, a, 0, Math.PI * 2); c.fill();
+    c.rotate(a);
+    c.globalAlpha = 0.85;
+    drawSwordProfile(c, 46 + rr() * 8, { flat: '#535b6b' });
+    c.globalAlpha = 1;
+    c.restore();
+  }
+
+  // ---- broken pillars + rubble at the edges ----
+  const pillars = [[ARENA.x + 8, ARENA.y + 150], [ARENA.x + ARENA.w - 8, ARENA.y + 240], [ARENA.x + 190, ARENA.y + ARENA.h - 6], [ARENA.x + ARENA.w - 210, ARENA.y + ARENA.h - 6]];
+  for (const [px0, py0] of pillars) {
+    c.save(); c.translate(px0, py0);
+    c.fillStyle = '#191b23';
+    c.beginPath();
+    c.moveTo(-11, 10); c.lineTo(-11, -14 - rr() * 10);
+    c.lineTo(-4, -10 - rr() * 14); c.lineTo(3, -18 - rr() * 8);
+    c.lineTo(11, -8 - rr() * 8); c.lineTo(11, 10);
+    c.closePath(); c.fill();
+    c.strokeStyle = '#0a0b10'; c.lineWidth = 1.5; c.stroke();
+    c.fillStyle = 'rgba(0,0,0,0.4)';
+    c.beginPath(); c.ellipse(0, 10, 16, 5, 0, 0, Math.PI * 2); c.fill();
+    c.restore();
+  }
+  for (let i = 0; i < 22; i++) {
+    const side = Math.floor(rr() * 4);
+    let rx, ry;
+    if (side === 0) { rx = ARENA.x + rr() * ARENA.w; ry = ARENA.y + 4 + rr() * 10; }
+    else if (side === 1) { rx = ARENA.x + rr() * ARENA.w; ry = ARENA.y + ARENA.h - 4 - rr() * 10; }
+    else if (side === 2) { rx = ARENA.x + 4 + rr() * 10; ry = ARENA.y + rr() * ARENA.h; }
+    else { rx = ARENA.x + ARENA.w - 4 - rr() * 10; ry = ARENA.y + rr() * ARENA.h; }
+    const rs2 = 2 + rr() * 5;
+    c.fillStyle = `rgba(${26 + rr() * 14 | 0},${28 + rr() * 14 | 0},${36 + rr() * 14 | 0},0.9)`;
+    c.beginPath(); c.moveTo(rx + rs2, ry);
+    for (let k = 1; k < 5; k++) { const aa = (k / 5) * Math.PI * 2; c.lineTo(rx + Math.cos(aa) * rs2 * (0.6 + rr() * 0.7), ry + Math.sin(aa) * rs2 * (0.6 + rr() * 0.7)); }
+    c.closePath(); c.fill();
+  }
+
+  // ---- the ruined gate, barred, looming beyond the top wall ----
+  c.save();
+  c.fillStyle = '#0c0d13';
+  c.fillRect(GATE.x - 96, 0, 34, ARENA.y + 4);
+  c.fillRect(GATE.x + 62, 0, 34, ARENA.y + 4);
+  c.beginPath(); c.moveTo(GATE.x - 96, 8); c.lineTo(GATE.x - 62, 8); c.lineTo(GATE.x - 40, 0); c.lineTo(GATE.x - 96, 0); c.closePath(); c.fill();
+  c.beginPath(); c.moveTo(GATE.x + 96, 10); c.lineTo(GATE.x + 62, 10); c.lineTo(GATE.x + 34, 0); c.lineTo(GATE.x + 96, 0); c.closePath(); c.fill();
+  c.strokeStyle = 'rgba(120,125,145,0.18)'; c.lineWidth = 1.5;
+  c.beginPath(); c.moveTo(GATE.x - 62, 0); c.lineTo(GATE.x - 62, ARENA.y + 2); c.stroke();
+  c.beginPath(); c.moveTo(GATE.x + 62, 0); c.lineTo(GATE.x + 62, ARENA.y + 2); c.stroke();
+  const og = c.createLinearGradient(0, 0, 0, ARENA.y);
+  og.addColorStop(0, '#171310'); og.addColorStop(1, '#0e0c0c');
+  c.fillStyle = og;
+  c.fillRect(GATE.x - 62, 0, 124, ARENA.y + 2);
+  const sg = c.createLinearGradient(0, ARENA.y, 0, ARENA.y + 60);
+  sg.addColorStop(0, 'rgba(0,0,0,0.34)'); sg.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = sg;
+  c.fillRect(GATE.x - 96, ARENA.y, 192, 60);
+  // the bar across it — never explained
+  c.fillStyle = '#1b1c24';
+  c.fillRect(GATE.x - 70, 32, 140, 12);
+  c.strokeStyle = '#0a0b10'; c.lineWidth = 1.5;
+  c.strokeRect(GATE.x - 70, 32, 140, 12);
+  c.fillStyle = '#3c3f4d';
+  for (let i = -2; i <= 2; i++) { c.beginPath(); c.arc(GATE.x + i * 28, 38, 1.8, 0, Math.PI * 2); c.fill(); }
+  c.restore();
+
+  // ---- tally scratches near the gate: neat rows decaying into chaos ----
+  const tally = (cx, cy, disorder) => {
+    c.save(); c.translate(cx, cy); c.rotate((rr() - 0.5) * disorder * 1.1);
+    c.strokeStyle = `rgba(172,166,152,${0.1 + rr() * 0.07})`; c.lineWidth = 1;
+    for (let k = 0; k < 4; k++) {
+      const jx = (rr() - 0.5) * disorder * 7, jy = (rr() - 0.5) * disorder * 7;
+      c.beginPath(); c.moveTo(k * 3.4 + jx, -4 + jy); c.lineTo(k * 3.4 + (rr() - 0.5) * disorder * 5 + jx, 4 + jy); c.stroke();
+    }
+    c.beginPath(); c.moveTo(-2, 3 + (rr() - 0.5) * disorder * 6); c.lineTo(13, -3 + (rr() - 0.5) * disorder * 6); c.stroke();
+    c.restore();
+  };
+  for (let i = 0; i < 40; i++) {
+    const leftSide = i % 2 === 0;
+    const t = rr();
+    const cx = leftSide ? lerp(96, GATE.x - 110, t) : lerp(W - 96, GATE.x + 110, t);
+    const cy = 16 + rr() * 40;
+    tally(cx, cy, t * t * 1.6);
+  }
+
+  // ---- handwriting in the dead script, low on the walls, unraveling near the gate ----
+  const writing = (cx, cy, count, size) => {
+    const disorder = clamp(1 - dist(cx, cy, GATE.x, GATE.y) / 620, 0.05, 1);
+    c.save(); c.translate(cx, cy); c.rotate((rr() - 0.5) * disorder * 0.3);
+    for (let k = 0; k < count; k++) {
+      strokeGlyph(c, makeGlyph(rr, size, 0.2 + disorder * 1.3), k * (size + 3) + (rr() - 0.5) * disorder * 6, (rr() - 0.5) * disorder * 8, 0.1);
+    }
+    c.restore();
+  };
+  writing(150, H - 26, 11, 7); writing(430, H - 34, 8, 7); writing(724, H - 22, 12, 6);
+  writing(30, 300, 7, 7); writing(W - 30, 350, 7, 7);
+  writing(150, 40, 9, 7); writing(W - 160, 34, 10, 7);
+
+  // ---- brazier bowls (flame + light are dynamic, drawn per frame) ----
+  for (const [bx0, by0] of BRAZIERS) {
+    c.fillStyle = '#23242e';
+    c.beginPath(); c.moveTo(bx0 - 9, by0 - 4); c.lineTo(bx0 + 9, by0 - 4); c.lineTo(bx0 + 6, by0 + 6); c.lineTo(bx0 - 6, by0 + 6); c.closePath(); c.fill();
+    c.strokeStyle = '#3c3f4d'; c.lineWidth = 1.6; c.stroke();
+  }
+
+  return s;
+})();
+
+/* =========================================================================
    GAME STATE
    ========================================================================= */
+const PART_CAP = 300;
 const G = {
   screen: 'title',      // title | intro | fight | dead | victory | refade
   screenT: 0,
@@ -281,50 +585,47 @@ const G = {
   slashes: [],          // transient slash-arc visuals
   dmgNums: [],          // floating damage numbers
   ring: null,           // boss shockwave ring {r, speed, width, maxR, dmg, hitDone}
-  floorCracks: []
+  carve: null,          // the ending: glyphs carved into the practice ring
+  victoryChimed: false
 };
-// static floor detail, seeded once
-for (let i = 0; i < 26; i++) {
-  const x = rand(ARENA.x + 20, ARENA.x + ARENA.w - 20), y = rand(ARENA.y + 20, ARENA.y + ARENA.h - 20);
-  const a = rand(0, Math.PI * 2), l = rand(14, 60);
-  G.floorCracks.push({ x1: x, y1: y, x2: x + Math.cos(a) * l, y2: y + Math.sin(a) * l });
-}
 
-const P = {  // player
+const P = {  // Nomad
   x: 0, y: 0, r: 13,
   hp: 100, hpMax: 100, hpGhost: 100,
   st: 100, stMax: 100, stDelay: 0, stFlash: 0,
-  walkT: 0, trail: [],
+  walkT: 0, trail: [], scarf: [],
+  blocking: false, parryStreak: 0,
   flasks: 3, flaskMax: 3,
   face: 0, moveDirX: 1, moveDirY: 0,
   locked: false,
-  act: null,            // {type:'roll'|'light'|'heavy'|'flask'|'hurt', t, dur, dirX, dirY, hitDone}
+  act: null,            // {type:'roll'|'light'|'heavy'|'parry'|'flask'|'hurt', t, dur, ...}
   hurtInv: 0,           // post-hit grace
   kbX: 0, kbY: 0,       // knockback velocity
   flash: 0,
-  dead: false
+  dead: false, deathX: 0, deathY: 0
 };
 
-const BOSS_NAME = 'VELGRIM';
-const BOSS_TITLE = 'Warden of the Ashen Gate';
+const BOSS_NAME = 'ALDRIC';
+const BOSS_TITLE = 'Who Was Given the Blade';
 const B = {  // boss
   x: 0, y: 0, r: 34,
   hp: 1000, hpMax: 1000, hpGhost: 1000,
   face: Math.PI,
   phase2: false,
-  state: 'idle',        // idle | attack | stagger | roar | dying
+  state: 'idle',        // idle | attack | stagger | roar | recoil | carve
   stateT: 0,
   cd: 1.2,
   atk: null, phaseIdx: 0, phaseT: 0, phaseDur: 0, hitDone: false,
   poise: 0, staggerT: 0,
   strafeDir: 1, strafeT: 0, approachT: 0,
+  exposedT: 0,          // five parries in a row: double damage
   wOff: 0.5, wLen: 70,  // weapon pose (offset from facing, length)
   tele: 0,              // telegraph intensity 0..1
   flash: 0,
   dieT: 0
 };
 
-/* ---------- boss attack definitions ----------
+/* ---------- boss attack definitions (unchanged from the current fight) ----------
    phases: d=duration  k='w'indup|'a'ctive|'r'ecover|'g'ap|'ring'
    w:[from,to] weapon angle offset (rel. facing), L:[from,to] weapon length
    track: rad/s facing correction (windups/gaps only) — then commits.
@@ -375,7 +676,8 @@ const ATK = {
 function resetFight() {
   P.x = ARENA.x + 130; P.y = ARENA.y + ARENA.h / 2;
   P.hp = P.hpMax; P.hpGhost = P.hpMax; P.st = P.stMax; P.stDelay = 0; P.stFlash = 0;
-  P.walkT = 0; P.trail.length = 0;
+  P.walkT = 0; P.trail.length = 0; P.blocking = false; P.parryStreak = 0;
+  P.scarf = []; for (let i = 0; i < 6; i++) P.scarf.push({ x: P.x, y: P.y });
   P.flasks = P.flaskMax; P.face = 0; P.moveDirX = 1; P.moveDirY = 0;
   P.locked = false; P.act = null; P.hurtInv = 0; P.kbX = P.kbY = 0; P.flash = 0; P.dead = false;
 
@@ -383,9 +685,10 @@ function resetFight() {
   B.hp = B.hpMax; B.hpGhost = B.hpMax; B.face = Math.PI;
   B.phase2 = false; B.state = 'idle'; B.stateT = 0; B.cd = 1.1;
   B.atk = null; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
-  B.poise = 0; B.staggerT = 0; B.wOff = 0.5; B.wLen = 70; B.tele = 0; B.flash = 0; B.dieT = 0;
+  B.poise = 0; B.staggerT = 0; B.exposedT = 0; B.wOff = 0.5; B.wLen = 70; B.tele = 0; B.flash = 0; B.dieT = 0;
 
   G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0; G.ring = null;
+  G.carve = null; G.victoryChimed = false;
   G.hitstop = 0; G.shake = 0;
 }
 function goto(screen) { G.screen = screen; G.screenT = 0; }
@@ -395,9 +698,14 @@ function goto(screen) { G.screen = screen; G.screenT = 0; }
    ========================================================================= */
 function spawnParticles(x, y, n, col, sp, life) {
   for (let i = 0; i < n; i++) {
+    if (G.particles.length >= PART_CAP) G.particles.shift();
     const a = rand(0, Math.PI * 2), v = rand(sp * 0.3, sp);
     G.particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rand(life * 0.5, life), maxLife: life, col, size: rand(1.5, 4) });
   }
+}
+function spawnDrift(x, y, vx, vy, col, life, size) {
+  if (G.particles.length >= PART_CAP) G.particles.shift();
+  G.particles.push({ x, y, vx, vy, life, maxLife: life, col, size });
 }
 function addSlash(x, y, ang, r, half, col, dur) {
   G.slashes.push({ x, y, ang, r, half, col, t: 0, dur });
@@ -409,11 +717,90 @@ function playerInvulnerable() {
   return false;
 }
 
-function damagePlayer(dmg, srcX, srcY) {
-  if (P.dead || playerInvulnerable()) return false;
+// A successful parry: the strike is turned, Aldric reels, clean streaks expose him.
+function onParrySuccess() {
+  if (P.act) P.act.success = true;
+  P.act = null;                              // instant recovery — the window is the reward
+  P.hurtInv = Math.max(P.hurtInv, 0.3);
+  P.parryStreak++;
+  const mx = (P.x + B.x) / 2, my = (P.y + B.y) / 2;
+  spawnParticles(mx, my, 22, '#ffe9a8', 260, 0.5);
+  spawnParticles(mx, my, 10, '#f2f6ff', 330, 0.3);
+  addSlash(mx, my, Math.atan2(P.y - B.y, P.x - B.x), 44, Math.PI, '#ffe9a8', 0.12);
+  G.hitstop = Math.max(G.hitstop, 0.09);
+  G.shake = Math.max(G.shake, 7);
+  sfx.parry();
+  rumble(140, 0.5, 0.9);
+  if (B.state !== 'dying' && B.state !== 'stagger' && B.state !== 'carve') {
+    B.state = 'recoil'; B.stateT = 0; B.atk = null; B.tele = 0;
+    B.poise += 1;
+    if (B.poise >= 6) {
+      B.state = 'stagger'; B.stateT = 0; B.staggerT = 1.5; B.poise = 0;
+      sfx.stagger();
+      G.shake = Math.max(G.shake, 8);
+      spawnParticles(B.x, B.y, 24, ACCENT, 220, 0.6);
+    }
+  }
+  if (P.parryStreak >= 5) {                  // five clean turns of the blade — he is EXPOSED
+    P.parryStreak = 0;
+    B.exposedT = 10;
+    sfx.exposed();
+    spawnParticles(B.x, B.y, 30, '#e8c15a', 250, 0.8);
+    G.shake = Math.max(G.shake, 6);
+    rumble(320, 0.4, 0.85);
+  }
+}
+
+function damagePlayer(dmg, srcX, srcY, parryable) {
+  if (P.dead) return false;
+  // parry — active window near the start of the swing turns any parryable strike
+  if (parryable && P.act && P.act.type === 'parry' && P.act.t >= 0.02 && P.act.t <= 0.2) {
+    onParrySuccess();
+    return true;
+  }
+  if (playerInvulnerable()) return false;
+  // block — guard held, attack from the front
+  if (P.blocking && P.st > 0) {
+    const toSrc = Math.atan2(srcY - P.y, srcX - P.x);
+    if (Math.abs(angDiff(P.face, toSrc)) < 1.75) {
+      const cost = 14 + dmg * 0.45;
+      if (P.st >= cost) {                    // the guard holds — chip damage + stamina
+        P.st -= cost; P.stDelay = 0.7;
+        P.hp -= Math.max(1, Math.round(dmg * 0.22));
+        P.hurtInv = Math.max(P.hurtInv, 0.2);
+        const ba = Math.atan2(P.y - srcY, P.x - srcX);
+        P.kbX = Math.cos(ba) * 130; P.kbY = Math.sin(ba) * 130;
+        spawnParticles(P.x + Math.cos(toSrc) * 14, P.y + Math.sin(toSrc) * 14, 8, '#cfd6e4', 180, 0.35);
+        G.hitstop = Math.max(G.hitstop, 0.035);
+        G.shake = Math.max(G.shake, 4);
+        sfx.block();
+        rumble(90, 0.3, 0.5);
+        if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; killPlayer(); }
+        return true;
+      }
+      // not enough stamina behind the shield-arm — GUARD BREAK
+      P.st = -25; P.stDelay = 0.9;
+      dmg = Math.round(dmg * 0.5);
+      P.hp -= dmg;
+      P.flash = 0.12;
+      P.hurtInv = 0.45;
+      P.parryStreak = 0;
+      const gba = Math.atan2(P.y - srcY, P.x - srcX);
+      P.kbX = Math.cos(gba) * 330; P.kbY = Math.sin(gba) * 330;
+      P.act = { type: 'hurt', t: 0, dur: 0.7 };
+      G.hitstop = Math.max(G.hitstop, 0.08);
+      G.shake = Math.max(G.shake, 11);
+      spawnParticles(P.x, P.y, 16, '#c33b3b', 200, 0.5);
+      sfx.guardBreak();
+      rumble(320, 1.0, 0.6);
+      if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; killPlayer(); }
+      return true;
+    }
+  }
   P.hp -= dmg;
   P.flash = 0.12;
   P.hurtInv = 0.45;
+  P.parryStreak = 0;                          // a clean hit ends the streak
   const a = Math.atan2(P.y - srcY, P.x - srcX);
   P.kbX = Math.cos(a) * 260; P.kbY = Math.sin(a) * 260;
   const wasFlask = P.act && P.act.type === 'flask';
@@ -424,7 +811,7 @@ function damagePlayer(dmg, srcX, srcY) {
   spawnParticles(P.x, P.y, 14, '#c33b3b', 190, 0.5);
   sfx.playerHit();
   rumble(220, 0.95, 0.5);
-  if (P.hp <= 0) { P.hp = 0; P.dead = true; killPlayer(); }
+  if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; killPlayer(); }
   return true;
 }
 
@@ -436,7 +823,8 @@ function killPlayer() {
 }
 
 function damageBoss(dmg) {
-  if (B.state === 'dying' || G.screen !== 'fight') return;
+  if (B.state === 'dying' || B.state === 'carve' || G.screen !== 'fight') return;
+  if (B.exposedT > 0) dmg *= 2;               // five parries left him open
   B.hp -= dmg;
   B.flash = 0.1;
   B.poise += 1;
@@ -456,15 +844,24 @@ function damageBoss(dmg) {
     spawnParticles(B.x, B.y, 24, ACCENT, 220, 0.6);
   }
   if (B.hp <= 0) {
-    B.hp = 0; B.state = 'dying'; B.dieT = 0; B.atk = null; B.tele = 0;
-    P.locked = false;
-    G.shake = 12;
-    sfx.slamImpact();
-    spawnParticles(B.x, B.y, 60, '#d9c98a', 260, 1.1);
+    B.hp = 0; B.atk = null; B.tele = 0;
+    startCarve();
   }
 }
 
 function spendStamina(cost) { P.st = Math.max(-25, P.st - cost); P.stDelay = 0.7; }
+
+/* ---------- the carving (the ending) ---------- */
+function startCarve() {
+  P.locked = false;
+  B.state = 'carve'; B.stateT = 0;
+  const rr = mulberry32((Math.random() * 1e9) | 0);
+  const glyphs = [];
+  for (let i = 0; i < 9; i++) glyphs.push(makeGlyph(rr, 13, 0.35));
+  const strokes = [];
+  glyphs.forEach((g2, gi) => { g2.forEach(s => strokes.push({ g: gi, s })); });
+  G.carve = { phase: 'walk', t: 0, x: RING.x, y: RING.y - 30, strokes, progress: 0, scrapeT: 0 };
+}
 
 /* =========================================================================
    PLAYER UPDATE
@@ -476,6 +873,16 @@ function updatePlayer(dt) {
   P.stFlash = Math.max(0, P.stFlash - dt * 2.2);
   P.hpGhost = Math.max(P.hp, P.hpGhost - P.hpMax * 0.3 * dt);
 
+  // scarf trails the shoulder — his one cool-blue mark
+  {
+    let ax = P.x + Math.cos(P.face + 2.4) * 10, ay = P.y + Math.sin(P.face + 2.4) * 10;
+    for (const s2 of P.scarf) {
+      s2.x += (ax - s2.x) * Math.min(1, 13 * dt);
+      s2.y += (ay - s2.y) * Math.min(1, 13 * dt);
+      ax = s2.x; ay = s2.y;
+    }
+  }
+
   // knockback decay
   P.x += P.kbX * dt; P.y += P.kbY * dt;
   P.kbX -= P.kbX * 10 * dt; P.kbY -= P.kbY * 10 * dt;
@@ -485,16 +892,19 @@ function updatePlayer(dt) {
 
   // lock-on toggle
   if (Input.lock && G.screen === 'fight') {
-    if (B.state !== 'dying') P.locked = !P.locked;
+    if (B.state !== 'dying' && B.state !== 'carve') P.locked = !P.locked;
   }
-  if (B.state === 'dying') P.locked = false;
+  if (B.state === 'dying' || B.state === 'carve') P.locked = false;
 
   // facing
   if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
   else if (mag > 0.01 && (!P.act || P.act.type === 'flask')) P.face = Math.atan2(mvY, mvX);
 
+  // guard is a held stance, only while otherwise free
+  P.blocking = Input.blockHeld && !P.act && G.screen === 'fight';
+
   const busy = P.act && P.act.type !== 'flask';
-  const sprinting = Input.sprint && !busy && mag > 0.01 && P.st > 0;
+  const sprinting = Input.sprint && !busy && !P.blocking && mag > 0.01 && P.st > 0;
 
   /* ---- start buffered actions ---- */
   const canAct = !P.act || (P.act.type === 'flask'); // roll may cancel flask (wastes rest of the sip)
@@ -517,7 +927,13 @@ function updatePlayer(dt) {
       if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
       P.act = { type: want, t: 0, dur: heavy ? 0.8 : 0.45, hitDone: false, face: P.face };
       sfx.swing(heavy);
-    } else if ((want === 'light' || want === 'heavy' || want === 'roll') && P.st <= 0) {
+    } else if (want === 'parry' && !P.act && P.st > 0) {
+      Input.consumeBuffer();
+      spendStamina(10);
+      if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
+      P.act = { type: 'parry', t: 0, dur: 0.45, success: false };
+      sfx.swing(false);
+    } else if ((want === 'light' || want === 'heavy' || want === 'roll' || want === 'parry') && P.st <= 0) {
       // not enough stamina — drop it and flash the stamina bar
       Input.consumeBuffer();
       P.stFlash = 0.4;
@@ -559,6 +975,12 @@ function updatePlayer(dt) {
       }
       if (a.t >= wStart && !a.slashed) { a.slashed = true; addSlash(P.x, P.y, a.face, heavy ? 94 : 80, heavy ? 1.3 : 1.1, '#dfe6f2', 0.16); }
       if (a.t >= a.dur) P.act = null;
+    } else if (a.type === 'parry') {
+      speedMul = 0;
+      if (a.t >= a.dur) {
+        if (!a.success) P.parryStreak = 0;   // a whiffed parry breaks the streak
+        P.act = null;
+      }
     } else if (a.type === 'flask') {
       speedMul = 0.42;
       P.hp = Math.min(P.hpMax, P.hp + 45 * dt / 1.0);
@@ -571,7 +993,7 @@ function updatePlayer(dt) {
 
   /* ---- movement ---- */
   if (speedMul > 0 || !P.act) {
-    const base = sprinting ? 265 : 175;
+    const base = sprinting ? 265 : (P.blocking ? 96 : 175);
     const sp = base * mag * (P.act ? speedMul : 1);
     P.x += mvX * sp * dt; P.y += mvY * sp * dt;
     P.walkT += sp * dt * 0.05;
@@ -579,14 +1001,14 @@ function updatePlayer(dt) {
 
   /* ---- stamina regen: delayed, never while sprinting or mid-action ---- */
   P.stDelay = Math.max(0, P.stDelay - dt);
-  if (P.stDelay <= 0 && !sprinting && !P.act) P.st = Math.min(P.stMax, P.st + 25 * dt);
+  if (P.stDelay <= 0 && !sprinting && !P.act) P.st = Math.min(P.stMax, P.st + 25 * (P.blocking ? 0.4 : 1) * dt);
 
   // clamp to arena
   P.x = clamp(P.x, ARENA.x + P.r, ARENA.x + ARENA.w - P.r);
   P.y = clamp(P.y, ARENA.y + P.r, ARENA.y + ARENA.h - P.r);
 
   // body separation vs boss
-  if (B.state !== 'dying') {
+  if (B.state !== 'dying' && B.state !== 'carve') {
     const d = dist(P.x, P.y, B.x, B.y), minD = P.r + B.r - 4;
     if (d < minD && d > 0.001) {
       const a = Math.atan2(P.y - B.y, P.x - B.x);
@@ -626,11 +1048,50 @@ function updateBoss(dt) {
   B.flash = Math.max(0, B.flash - dt);
   B.hpGhost = Math.max(B.hp, B.hpGhost - B.hpMax * 0.35 * dt);
   B.poise = Math.max(0, B.poise - 0.85 * dt);
+  B.exposedT = Math.max(0, B.exposedT - dt);
   B.stateT += dt;
 
-  // phase-2 embers drift off the Warden
-  if (B.phase2 && B.state !== 'dying' && Math.random() < dt * 8) {
-    G.particles.push({ x: B.x + rand(-26, 26), y: B.y + rand(-26, 26), vx: rand(-10, 10), vy: rand(-48, -22), life: rand(0.4, 0.9), maxLife: 0.9, col: ACCENT, size: rand(1.5, 3) });
+  // phase-2 embers drift off him
+  if (B.phase2 && B.state !== 'dying' && B.state !== 'carve' && Math.random() < dt * 8) {
+    spawnDrift(B.x + rand(-26, 26), B.y + rand(-26, 26), rand(-10, 10), rand(-48, -22), ACCENT, rand(0.4, 0.9), rand(1.5, 3));
+  }
+
+  /* ---- THE CARVING — the ending ---- */
+  if (B.state === 'carve') {
+    const cv = G.carve;
+    if (!cv) return;
+    cv.t += dt;
+    if (cv.phase === 'walk') {
+      const d = dist(B.x, B.y, RING.x, RING.y);
+      if (d > 8 && cv.t < 3.0) {
+        const a = Math.atan2(RING.y - B.y, RING.x - B.x);
+        B.face = turnToward(B.face, a, 3 * dt);
+        B.x += Math.cos(a) * 62 * dt; B.y += Math.sin(a) * 62 * dt;
+      } else { cv.phase = 'kneel'; cv.t = 0; }
+      B.wOff = lerp(B.wOff, 0.9, 3 * dt); B.wLen = lerp(B.wLen, 52, 3 * dt);
+    } else if (cv.phase === 'kneel') {
+      B.face = turnToward(B.face, -Math.PI / 2, 2.5 * dt);
+      B.wOff = lerp(B.wOff, 1.2, 4 * dt); B.wLen = lerp(B.wLen, 46, 4 * dt);
+      if (cv.t > 0.8) { cv.phase = 'carving'; cv.t = 0; }
+    } else if (cv.phase === 'carving') {
+      cv.progress = Math.min(0.93, cv.t / 3.6);      // the final glyph is never finished
+      cv.scrapeT -= dt;
+      if (cv.scrapeT <= 0 && cv.progress < 0.93) { cv.scrapeT = rand(0.3, 0.45); sfx.scrapeOne(); }
+      if (cv.progress < 0.93 && Math.random() < dt * 18) {
+        const si = Math.floor(cv.progress * cv.strokes.length);
+        const st2 = cv.strokes[Math.min(si, cv.strokes.length - 1)];
+        const gx = cv.x - 64 + st2.g * 16;
+        spawnDrift(gx + st2.s[2], cv.y + 26 + st2.s[3], rand(-20, 20), rand(-30, -6), ACCENT, rand(0.15, 0.4), 1.5);
+        spawnDrift(gx + st2.s[2], cv.y + 26 + st2.s[3], rand(-12, 12), rand(-16, -2), 'rgba(170,164,152,0.6)', rand(0.3, 0.6), 1.5);
+      }
+      if (cv.t > 4.4) { cv.phase = 'drop'; cv.t = 0; }
+    } else if (cv.phase === 'drop') {
+      B.wOff = lerp(B.wOff, 1.7, 3 * dt); B.wLen = lerp(B.wLen, 40, 3 * dt);
+      if (cv.t > 0.8) { cv.phase = 'still'; cv.t = 0; }
+    } else if (cv.phase === 'still') {
+      if (cv.t > 2.0 && G.screen === 'fight') goto('victory');
+    }
+    return;
   }
 
   if (B.state === 'dying') {
@@ -656,6 +1117,18 @@ function updateBoss(dt) {
   if (B.state === 'roar') {
     B.wOff = lerp(B.wOff, 0.9, 6 * dt); B.wLen = lerp(B.wLen, 55, 6 * dt);
     if (B.stateT >= 1.6) { B.state = 'idle'; B.cd = 0.35; }
+    return;
+  }
+
+  if (B.state === 'recoil') {                // knocked off-balance by a parry
+    B.tele = 0;
+    B.wOff = lerp(B.wOff, -1.45, 7 * dt); B.wLen = lerp(B.wLen, 82, 7 * dt);
+    if (B.stateT < 0.2) {
+      B.x -= Math.cos(B.face) * 55 * dt; B.y -= Math.sin(B.face) * 55 * dt;
+      B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
+      B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
+    }
+    if (B.stateT >= 0.85) { B.state = 'idle'; B.cd = 0.75; }
     return;
   }
 
@@ -737,7 +1210,7 @@ function updateBoss(dt) {
       }
     }
 
-    // active hit check
+    // active hit check — every boss hit is parryable
     if (ph.k === 'a' && ph.hit && !B.hitDone) {
       let hit = false;
       if (ph.hit.s === 'arc') {
@@ -751,7 +1224,8 @@ function updateBoss(dt) {
         if (dist(cx, cy, P.x, P.y) < ph.hit.r + P.r) hit = true;
       }
       if (hit) {
-        B.hitDone = damagePlayer(ph.dmg, B.x, B.y) || B.hitDone;
+        B.hitDone = damagePlayer(ph.dmg, B.x, B.y, true) || B.hitDone;
+        if (B.state !== 'attack') { B.phaseStarted = false; return; } // a parry knocked him out of the swing
       }
       // ground impact feedback once, at start of active
       if (ph.impact && !B.impacted) {
@@ -789,7 +1263,7 @@ function updateRing(dt) {
   if (!r.hitDone) {
     const d = dist(r.x, r.y, P.x, P.y);
     if (Math.abs(d - r.r) < r.width / 2 + P.r * 0.6) {
-      if (damagePlayer(r.dmg, r.x, r.y)) r.hitDone = true;
+      if (damagePlayer(r.dmg, r.x, r.y, false)) r.hitDone = true;
       else if (playerInvulnerable()) r.hitDone = true; // rolled through it — it's past you now
     }
   }
@@ -881,71 +1355,50 @@ function roundRect(x, y, w, h, r) {
   ctx.closePath();
 }
 
+function drawTracked(text, x, y, spacing) {
+  const prevAlign = ctx.textAlign;
+  ctx.textAlign = 'left';
+  let total = 0;
+  const ws = [];
+  for (const ch of text) { const w = ctx.measureText(ch).width; ws.push(w); total += w + spacing; }
+  total -= spacing;
+  let cx = x - total / 2;
+  let i = 0;
+  for (const ch of text) { ctx.fillText(ch, cx, y); cx += ws[i] + spacing; i++; }
+  ctx.textAlign = prevAlign;
+}
+
 function drawFloor() {
-  ctx.fillStyle = '#0b0d12';
-  ctx.fillRect(0, 0, W, H);
-  const g = ctx.createRadialGradient(W / 2, H / 2, 60, W / 2, H / 2, 480);
-  g.addColorStop(0, '#232939');
-  g.addColorStop(0.7, '#191e2b');
-  g.addColorStop(1, '#10131c');
-  ctx.fillStyle = g;
-  ctx.fillRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h);
-  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
-  ctx.lineWidth = 1;
-  for (const c of G.floorCracks) {
-    ctx.beginPath(); ctx.moveTo(c.x1, c.y1); ctx.lineTo(c.x2, c.y2); ctx.stroke();
-  }
-  // stone flagging
-  ctx.strokeStyle = 'rgba(255,255,255,0.028)';
-  ctx.lineWidth = 1;
-  for (let gx = ARENA.x + 54; gx < ARENA.x + ARENA.w; gx += 54) {
-    ctx.beginPath(); ctx.moveTo(gx, ARENA.y); ctx.lineTo(gx, ARENA.y + ARENA.h); ctx.stroke();
-  }
-  for (let gy = ARENA.y + 54; gy < ARENA.y + ARENA.h; gy += 54) {
-    ctx.beginPath(); ctx.moveTo(ARENA.x, gy); ctx.lineTo(ARENA.x + ARENA.w, gy); ctx.stroke();
+  ctx.drawImage(ARENA_BAKE, 0, 0, W, H);
+
+  // dynamic ritual-glow overlay (phase 2 lights the pentacle brighter — cheap, small)
+  if (B.phase2) {
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.strokeStyle = `rgba(255,158,44,${0.14 - 0.07})`;
+    ctx.restore();
   }
 
-  // ritual sigil at the arena's heart
-  ctx.save();
-  ctx.translate(W / 2, H / 2);
-  ctx.strokeStyle = 'rgba(150,160,190,0.1)';
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(0, 0, 122, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.arc(0, 0, 112, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.arc(0, 0, 58, 0, Math.PI * 2); ctx.stroke();
-  ctx.strokeStyle = `rgba(255,158,44,${B.phase2 ? 0.14 : 0.07})`;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let i = 0; i < 5; i++) {                       // inscribed pentacle
-    const a = -Math.PI / 2 + (i * 4 * Math.PI * 2) / 5;
-    const x = Math.cos(a) * 112, y = Math.sin(a) * 112;
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  }
-  ctx.closePath(); ctx.stroke();
-  ctx.restore();
-
-  // corner braziers — the arena's only warm light
-  for (const c of [[ARENA.x + 34, ARENA.y + 34], [ARENA.x + ARENA.w - 34, ARENA.y + 34],
-                   [ARENA.x + 34, ARENA.y + ARENA.h - 34], [ARENA.x + ARENA.w - 34, ARENA.y + ARENA.h - 34]]) {
+  // corner braziers — the arena's only warm light (flicker is dynamic, drawn per frame)
+  for (const c of BRAZIERS) {
     const fl = 0.75 + 0.25 * Math.sin(G.time * 7 + c[0] * 0.1);
-    const g2 = ctx.createRadialGradient(c[0], c[1], 0, c[0], c[1], 90 * fl);
-    g2.addColorStop(0, 'rgba(255,158,44,0.16)');
-    g2.addColorStop(0.5, 'rgba(255,120,40,0.05)');
-    g2.addColorStop(1, 'rgba(255,120,40,0)');
-    ctx.fillStyle = g2;
-    ctx.beginPath(); ctx.arc(c[0], c[1], 90 * fl, 0, Math.PI * 2); ctx.fill();
-    // bowl
-    ctx.fillStyle = '#2a2530';
-    ctx.beginPath(); ctx.moveTo(c[0] - 9, c[1] - 4); ctx.lineTo(c[0] + 9, c[1] - 4);
-    ctx.lineTo(c[0] + 6, c[1] + 6); ctx.lineTo(c[0] - 6, c[1] + 6); ctx.closePath(); ctx.fill();
-    // flame
+    ctx.globalAlpha = 0.16 * fl;
+    ctx.drawImage(GLOW_EMBER, c[0] - 90 * fl, c[1] - 90 * fl, 180 * fl, 180 * fl);
+    ctx.globalAlpha = 1;
     ctx.fillStyle = `rgba(255,${150 + Math.floor(60 * fl)},60,${0.85 * fl})`;
     ctx.beginPath();
     ctx.moveTo(c[0], c[1] - 12 - 5 * fl);
     ctx.quadraticCurveTo(c[0] + 6, c[1] - 4, c[0], c[1] - 3);
     ctx.quadraticCurveTo(c[0] - 6, c[1] - 4, c[0], c[1] - 12 - 5 * fl);
     ctx.fill();
+    if (Math.random() < 0.08) spawnDrift(c[0] + rand(-4, 4), c[1] - 10, rand(-6, 6), rand(-40, -22), ACCENT, rand(0.6, 1.2), rand(1.2, 2.2));
   }
+
+  // the dying ember light inside the gate's opening
+  const gf = 0.7 + 0.3 * Math.sin(G.time * 1.3);
+  ctx.globalAlpha = 0.14 * gf;
+  ctx.drawImage(GLOW_EMBER, GATE.x - 44 * gf, 24 - 34 * gf, 88 * gf, 68 * gf);
+  ctx.globalAlpha = 1;
 
   // drifting ash motes
   ctx.fillStyle = 'rgba(200,190,170,0.16)';
@@ -957,29 +1410,13 @@ function drawFloor() {
   }
 }
 
-// One baked radial-gradient sprite, blitted for every wisp — far cheaper on
-// mobile than building 40+ gradients per frame.
-const FOG_SPRITE = (() => {
-  const s = document.createElement('canvas');
-  s.width = s.height = 64;
-  const c = s.getContext('2d');
-  const g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
-  g.addColorStop(0, 'rgba(150,165,205,1)');
-  g.addColorStop(1, 'rgba(150,165,205,0)');
-  c.fillStyle = g;
-  c.fillRect(0, 0, 64, 64);
-  return s;
-})();
-
 function drawFogWall() {
   const t = G.time;
   ctx.save();
-  // border band
   ctx.lineWidth = 3;
   ctx.strokeStyle = 'rgba(130,148,190,0.4)';
   roundRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h, 10);
   ctx.stroke();
-  // drifting wisps along each edge
   ctx.globalAlpha = 1;
   for (let i = 0; i < 42; i++) {
     const u = (i / 42 + t * 0.014 * (i % 3 === 0 ? 1.6 : 1)) % 1;
@@ -993,7 +1430,6 @@ function drawFogWall() {
     ctx.globalAlpha = 0.09 + 0.06 * Math.sin(t * 1.3 + i);
     ctx.drawImage(FOG_SPRITE, x - s, y - s, s * 2, s * 2);
   }
-  // dark outside
   ctx.globalAlpha = 1;
   ctx.fillStyle = 'rgba(4,5,8,0.72)';
   ctx.beginPath();
@@ -1015,6 +1451,41 @@ function drawRing() {
   ctx.globalAlpha = 0.35 * fade;
   ctx.lineWidth = r.width * 1.3;
   ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawCarving() {
+  const cv = G.carve;
+  if (!cv || B.state !== 'carve') return;
+  const total = cv.strokes.length;
+  const shown = cv.progress * total;
+  const full = Math.floor(shown);
+  ctx.save();
+  for (let i = 0; i < Math.min(full + 1, total); i++) {
+    const st2 = cv.strokes[i];
+    const gx = cv.x - 64 + st2.g * 16, gy = cv.y + 26;
+    let frac = 1;
+    if (i === full) frac = shown - full;
+    if (frac <= 0) continue;
+    const x2 = st2.s[0] + (st2.s[2] - st2.s[0]) * frac;
+    const y2 = st2.s[1] + (st2.s[3] - st2.s[1]) * frac;
+    ctx.strokeStyle = 'rgba(20,17,14,0.9)'; ctx.lineWidth = 2.6;
+    ctx.beginPath(); ctx.moveTo(gx + st2.s[0], gy + st2.s[1]); ctx.lineTo(gx + x2, gy + y2); ctx.stroke();
+    ctx.strokeStyle = i >= full - 3 ? 'rgba(255,158,44,0.5)' : 'rgba(196,188,172,0.32)'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(gx + st2.s[0], gy + st2.s[1]); ctx.lineTo(gx + x2, gy + y2); ctx.stroke();
+  }
+  if (cv.phase !== 'walk' && cv.phase !== 'kneel') {
+    const reveal = clamp(cv.progress / 0.93, 0, 1);
+    const text = 'NOMAD, NOWHERE TO —';
+    const chars = Math.floor(reveal * text.length);
+    if (chars > 0) {
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = '#c9c2b2';
+      ctx.font = '600 13px Georgia, "Times New Roman", serif';
+      drawTracked(text.slice(0, chars), cv.x, cv.y + 54, 3.2);
+      ctx.globalAlpha = 1;
+    }
+  }
   ctx.restore();
 }
 
@@ -1042,30 +1513,37 @@ function drawParticles() {
   ctx.globalAlpha = 1;
 }
 
-function drawSword(len, white) {
-  // grip + pommel
-  ctx.fillStyle = white ? '#ffffff' : '#4a3b2c';
-  ctx.fillRect(-8, -1.8, 8, 3.6);
-  ctx.beginPath(); ctx.arc(-9, 0, 2.4, 0, Math.PI * 2); ctx.fill();
-  // crossguard
-  ctx.fillStyle = white ? '#ffffff' : '#6e6046';
-  ctx.fillRect(-1.5, -7, 3, 14);
-  // tapered blade
-  const g = ctx.createLinearGradient(0, -3.5, 0, 3.5);
-  g.addColorStop(0, '#f4f7ff'); g.addColorStop(0.5, '#c3cddf'); g.addColorStop(1, '#8f9ab0');
-  ctx.fillStyle = white ? '#ffffff' : g;
-  ctx.beginPath();
-  ctx.moveTo(1.5, -3.2); ctx.lineTo(len - 8, -2.4); ctx.lineTo(len, 0); ctx.lineTo(len - 8, 2.4); ctx.lineTo(1.5, 3.2);
-  ctx.closePath(); ctx.fill();
-  if (!white) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-    ctx.lineWidth = 0.8;
-    ctx.beginPath(); ctx.moveTo(3, 0); ctx.lineTo(len - 7, 0); ctx.stroke();
-  }
-}
+function drawSword(len, white) { drawSwordProfile(ctx, len, { white }); }
 
 function drawPlayer() {
-  if (G.screen === 'dead' && G.screenT > 0.8) return;
+  if (P.dead) {
+    // crumple + a soul-wisp drifting up and away
+    const t = G.screenT;
+    if (t < 4) {
+      ctx.save();
+      ctx.translate(P.deathX, P.deathY);
+      ctx.globalAlpha = clamp(1 - t / 4, 0.2, 1);
+      ctx.rotate(1.35);
+      ctx.fillStyle = '#8d97ad';
+      ctx.beginPath(); ctx.ellipse(0, 0, 15, 7, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#aab5cc';
+      ctx.beginPath(); ctx.moveTo(15, 0); ctx.lineTo(4, -5); ctx.lineTo(4, 5); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    const wt = clamp(t - 0.5, 0, 3.2);
+    if (wt > 0 && wt < 3.2) {
+      const wy = P.deathY - 14 - wt * 24;
+      const wa = clamp(1 - wt / 3.2, 0, 0.85);
+      const wx = P.deathX + Math.sin(t * 2.2) * 8;
+      ctx.globalAlpha = wa;
+      ctx.drawImage(GLOW_BLUE, wx - 12, wy - 12, 24, 24);
+      ctx.globalAlpha = wa * 0.9;
+      ctx.fillStyle = '#dceaff';
+      ctx.beginPath(); ctx.arc(wx, wy, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    return;
+  }
 
   // roll afterimages
   for (const t of P.trail) {
@@ -1076,6 +1554,22 @@ function drawPlayer() {
     ctx.fillStyle = '#9fb2d4';
     ctx.beginPath(); ctx.ellipse(0, 0, 15, 9, 0, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+  }
+
+  // the scarf — trailing off the shoulder, pale blue
+  if (P.scarf.length) {
+    ctx.strokeStyle = COOL;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < P.scarf.length - 1; i++) {
+      ctx.globalAlpha = 0.7 * (1 - i / P.scarf.length);
+      ctx.lineWidth = 3 - i * 0.35;
+      ctx.beginPath();
+      ctx.moveTo(P.scarf[i].x, P.scarf[i].y);
+      ctx.lineTo(P.scarf[i + 1].x, P.scarf[i + 1].y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.lineCap = 'butt';
   }
 
   ctx.save();
@@ -1096,7 +1590,6 @@ function drawPlayer() {
     ctx.strokeStyle = white ? '#ffffff' : '#3a4152';
     ctx.lineWidth = 1.8;
     ctx.stroke();
-    // tuck lines suggest the tumble
     ctx.strokeStyle = white ? '#ffffff' : 'rgba(58,65,82,0.8)';
     ctx.lineWidth = 1.5;
     for (let i = 0; i < 3; i++) {
@@ -1129,7 +1622,6 @@ function drawPlayer() {
     ctx.strokeStyle = white ? '#ffffff' : '#333a4b';
     ctx.lineWidth = 1.5;
     ctx.stroke();
-    // plate seams
     if (!white) {
       ctx.strokeStyle = 'rgba(51,58,75,0.55)';
       ctx.lineWidth = 1;
@@ -1144,7 +1636,7 @@ function drawPlayer() {
     ctx.beginPath(); ctx.arc(-1, -10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     ctx.beginPath(); ctx.arc(-1, 10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
 
-    // helm with visor
+    // pointed helm
     const hg = ctx.createLinearGradient(2, 0, 16, 0);
     hg.addColorStop(0, '#aab5cc'); hg.addColorStop(1, '#f2f6ff');
     ctx.fillStyle = white ? '#ffffff' : hg;
@@ -1152,14 +1644,17 @@ function drawPlayer() {
     ctx.strokeStyle = white ? '#ffffff' : '#252c3c';
     ctx.lineWidth = 1.2;
     ctx.stroke();
+    // glowing visor slit — pale blue, his one warm sign of life
     if (!white) {
-      // dark visor slit — the one bit of "face" the knight gets
-      ctx.strokeStyle = '#141924';
-      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.55;
+      ctx.drawImage(GLOW_BLUE, 3, -7, 14, 14);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = COOL;
+      ctx.lineWidth = 1.8;
       ctx.beginPath(); ctx.moveTo(10, -3.6); ctx.lineTo(14, 0); ctx.lineTo(10, 3.6); ctx.stroke();
     }
 
-    // sword — held low, swings across on attacks
+    // sword — held low; swings across on attacks, raised flat when guarding
     let swordAng = 0.75, swordLen = 30;
     if (P.act && (P.act.type === 'light' || P.act.type === 'heavy')) {
       const heavy = P.act.type === 'heavy';
@@ -1167,6 +1662,12 @@ function drawPlayer() {
       const k = clamp(P.act.t / wEnd, 0, 1);
       swordAng = lerp(-1.6, 1.3, k);
       swordLen = heavy ? 36 : 32;
+    } else if (P.act && P.act.type === 'parry') {
+      swordAng = lerp(0.4, -1.7, clamp(P.act.t / 0.2, 0, 1));
+      swordLen = 32;
+    } else if (P.blocking) {
+      swordAng = -1.15;
+      swordLen = 32;
     }
     ctx.save();
     ctx.translate(3, 9);
@@ -1174,22 +1675,34 @@ function drawPlayer() {
     drawSword(swordLen, white);
     ctx.restore();
 
+    // guard shimmer — a ward of steel across the facing arc
+    if (P.blocking) {
+      ctx.strokeStyle = `rgba(180,200,240,${0.3 + 0.12 * Math.sin(G.time * 6)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(5, 0, 17, -1.2, 1.2); ctx.stroke();
+    }
+    // the glint of an active parry window
+    if (P.act && P.act.type === 'parry' && P.act.t <= 0.2) {
+      ctx.strokeStyle = 'rgba(255,244,214,0.75)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(4, 0, 20, -1.5, 0.6); ctx.stroke();
+    }
+
     if (flasking) {
-      const fg = ctx.createRadialGradient(-2, -15, 1, -2, -15, 10);
-      fg.addColorStop(0, 'rgba(255,220,120,0.85)'); fg.addColorStop(1, 'rgba(255,220,120,0)');
-      ctx.fillStyle = fg;
-      ctx.beginPath(); ctx.arc(-2, -15, 10, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.7;
+      ctx.drawImage(GLOW_GOLD, -12, -25, 20, 20);
+      ctx.globalAlpha = 1;
       ctx.fillStyle = '#e7bf45';
       ctx.beginPath(); ctx.arc(-2, -15, 4.5, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#8a6a1d';
       ctx.fillRect(-3.6, -22.5, 3.2, 4);
-      if (Math.random() < 0.35) spawnParticles(P.x, P.y - 14, 1, '#ffe08a', 45, 0.5);
+      if (Math.random() < 0.35) spawnDrift(P.x, P.y - 14, rand(-8, 8), rand(-40, -20), '#ffe08a', 0.5, 2);
     }
   }
   ctx.restore();
 
   // lock-on reticle over boss
-  if (P.locked && B.state !== 'dying') {
+  if (P.locked && B.state !== 'dying' && B.state !== 'carve') {
     const pu = 1 + 0.1 * Math.sin(G.time * 6);
     ctx.save();
     ctx.translate(B.x, B.y - B.r - 26);
@@ -1205,9 +1718,10 @@ function drawPlayer() {
 
 function drawBoss() {
   const dying = B.state === 'dying';
+  const carving = B.state === 'carve';
   let alpha = 1;
   if (dying) alpha = clamp(1 - B.dieT / 1.3, 0, 1);
-  if (G.screen === 'victory') alpha = 0;
+  if (G.screen === 'victory' && !carving) alpha = 0;
   if (alpha <= 0) return;
 
   ctx.save();
@@ -1221,10 +1735,11 @@ function drawBoss() {
   ctx.rotate(B.face);
   const stag = B.state === 'stagger';
   if (stag) ctx.rotate(0.35 * Math.sin(G.time * 3));
+  const kneeling = carving && G.carve && G.carve.phase !== 'walk';
+  if (kneeling) { ctx.scale(1, 0.86); ctx.translate(3, 0); }
 
   const tele = B.tele;
   const white = B.flash > 0;
-  // body color lerps toward the accent while telegraphing
   const mix = (c1, c2, t) => {
     const p = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
     const a = p(c1), b2 = p(c2);
@@ -1242,7 +1757,6 @@ function drawBoss() {
   ctx.beginPath();
   ctx.moveTo(-6, -30);
   ctx.quadraticCurveTo(-34, -34 + sw * 3, -52 + sw2 * 4, -20 + sw * 4);
-  // ragged hem
   ctx.lineTo(-44, -10 + sw2 * 2);
   ctx.lineTo(-56 + sw * 3, -2);
   ctx.lineTo(-45, 5 + sw2 * 2);
@@ -1265,13 +1779,32 @@ function drawBoss() {
   ctx.strokeStyle = white ? '#ffffff' : '#0b0810';
   ctx.lineWidth = 2.5;
   ctx.stroke();
-  // cold rim light down the leading edge keeps him readable against the dark floor
   if (!white) {
     ctx.strokeStyle = 'rgba(190,205,240,0.5)';
     ctx.lineWidth = 1.8;
     ctx.beginPath();
     ctx.moveTo(18, -24); ctx.lineTo(30, 0); ctx.lineTo(18, 24);
     ctx.stroke();
+  }
+
+  // ---- portcullis-bar ribs across the torso, with an ember core glowing through ----
+  if (!white) {
+    let core = B.phase2 ? 1 : 0.5;
+    ctx.globalAlpha = alpha * core;
+    ctx.drawImage(GLOW_EMBER, -12, -14, 24, 28);
+    ctx.globalAlpha = alpha;
+  }
+  ctx.strokeStyle = white ? '#ffffff' : '#14111c';
+  ctx.lineWidth = 3.5;
+  for (const rx of [-18, -6, 6, 18]) {
+    ctx.beginPath(); ctx.moveTo(rx, -22 + Math.abs(rx) * 0.15); ctx.lineTo(rx, 22 - Math.abs(rx) * 0.15); ctx.stroke();
+  }
+  if (!white) {
+    ctx.fillStyle = mix('#6d5f78', ACCENT, pulse * 0.4);
+    for (const rx of [-18, -6, 6, 18]) {
+      ctx.beginPath(); ctx.arc(rx, -18 + Math.abs(rx) * 0.15, 1.4, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(rx, 18 - Math.abs(rx) * 0.15, 1.4, 0, Math.PI * 2); ctx.fill();
+    }
   }
 
   // chest plate + ashen sigil
@@ -1286,7 +1819,7 @@ function drawBoss() {
     ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(-2, -7); ctx.lineTo(-2, 7); ctx.closePath(); ctx.stroke();
   }
 
-  // ---- spiked pauldrons ----
+  // ---- hinge pauldrons with rivets ----
   const drawPauldron = (sy) => {
     ctx.save();
     ctx.translate(-6, sy * 27);
@@ -1294,7 +1827,6 @@ function drawBoss() {
     ctx.beginPath(); ctx.ellipse(0, 0, 15, 12, sy * 0.3, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = white ? '#ffffff' : '#0d0a14';
     ctx.lineWidth = 1.8; ctx.stroke();
-    // spikes fanning away from the body
     ctx.fillStyle = white ? '#ffffff' : mix('#d8c7d2', ACCENT, pulse);
     ctx.strokeStyle = white ? '#ffffff' : '#0b0810';
     ctx.lineWidth = 1;
@@ -1305,6 +1837,10 @@ function drawBoss() {
       ctx.fill(); ctx.stroke();
       ctx.restore();
     }
+    if (!white) {
+      ctx.fillStyle = '#3a3540';
+      for (const rx of [-8, 0, 8]) { ctx.beginPath(); ctx.arc(rx, sy * -8, 1.3, 0, Math.PI * 2); ctx.fill(); }
+    }
     ctx.restore();
   };
   drawPauldron(-1); drawPauldron(1);
@@ -1312,26 +1848,23 @@ function drawBoss() {
   // ---- horned helm ----
   ctx.save();
   ctx.translate(24, 0);
-  // horns sweep forward past the head, well clear of the pauldrons
   const hornCol = white ? '#ffffff' : mix('#e6d8c2', ACCENT, pulse);
   for (const s of [-1, 1]) {
     ctx.beginPath();
     ctx.moveTo(1, s * 3);
-    ctx.quadraticCurveTo(20, s * 9, 32, s * 23);    // outer edge out to the tip
-    ctx.quadraticCurveTo(15, s * 17, 1, s * 12);    // inner edge back to the base
+    ctx.quadraticCurveTo(20, s * 9, 32, s * 23);
+    ctx.quadraticCurveTo(15, s * 17, 1, s * 12);
     ctx.closePath();
     ctx.fillStyle = hornCol;
     ctx.fill();
     ctx.strokeStyle = white ? '#ffffff' : '#0b0810';
     ctx.lineWidth = 1.3; ctx.stroke();
-    // ridge line along the horn
     if (!white) {
       ctx.strokeStyle = 'rgba(120,96,70,0.55)';
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(4, s * 7); ctx.quadraticCurveTo(18, s * 12, 29, s * 21); ctx.stroke();
     }
   }
-  // helm, projecting forward of the shoulders
   const hgr = ctx.createLinearGradient(-9, 0, 20, 0);
   hgr.addColorStop(0, '#3a2f43'); hgr.addColorStop(1, '#7c6989');
   ctx.fillStyle = white ? '#ffffff' : (pulse > 0.02 ? mix('#54465e', ACCENT, pulse * 0.6) : hgr);
@@ -1341,38 +1874,32 @@ function drawBoss() {
   ctx.closePath(); ctx.fill();
   ctx.strokeStyle = white ? '#ffffff' : '#0b0810';
   ctx.lineWidth = 1.8; ctx.stroke();
-  // crest ridge
   if (!white) {
     ctx.strokeStyle = mix('#c9a34a', ACCENT, pulse);
     ctx.lineWidth = 1.6;
     ctx.beginPath(); ctx.moveTo(18, 0); ctx.lineTo(-6, 0); ctx.stroke();
   }
-  // burning eyes — always lit, fiercer in phase 2
   if (!white) {
     const eg = B.phase2 ? 1 : 0.62;
     const flick = eg * (0.85 + 0.15 * Math.sin(G.time * 13));
-    const glow = ctx.createRadialGradient(4, 0, 0, 4, 0, 16);
-    glow.addColorStop(0, `rgba(255,158,44,${0.6 * flick})`);
-    glow.addColorStop(1, 'rgba(255,158,44,0)');
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(4, 0, 16, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = alpha * 0.6 * flick;
+    ctx.drawImage(GLOW_EMBER, -6, -16, 32, 32);
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = `rgba(255,232,190,${flick})`;
     ctx.beginPath(); ctx.ellipse(6, -4.6, 3.8, 2, 0.3, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.ellipse(6, 4.6, 3.8, 2, -0.3, 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
 
-  // ---- greatblade ----
+  // ---- the blade he was given ----
   ctx.save();
   ctx.rotate(B.wOff);
   const L = B.wLen, hilt = 16;
-  // wrapped grip + heavy crossguard
   ctx.fillStyle = white ? '#ffffff' : '#3a2c22';
   ctx.fillRect(hilt - 16, -3, 16, 6);
   ctx.fillStyle = white ? '#ffffff' : mix('#8d7385', ACCENT, pulse);
   ctx.beginPath(); ctx.moveTo(hilt - 2, -13); ctx.lineTo(hilt + 5, -4); ctx.lineTo(hilt + 5, 4); ctx.lineTo(hilt - 2, 13);
   ctx.lineTo(hilt - 6, 9); ctx.lineTo(hilt - 6, -9); ctx.closePath(); ctx.fill();
-  // broad tapered blade
   const blg = ctx.createLinearGradient(0, -8, 0, 8);
   blg.addColorStop(0, '#b9c2d4'); blg.addColorStop(0.45, '#7e8798'); blg.addColorStop(1, '#464e5e');
   ctx.fillStyle = white ? '#ffffff' : (pulse > 0.02 ? mix('#7e8798', ACCENT, pulse) : blg);
@@ -1387,13 +1914,11 @@ function drawBoss() {
   ctx.closePath(); ctx.fill();
   ctx.strokeStyle = white ? '#ffffff' : '#14111c';
   ctx.lineWidth = 1.5; ctx.stroke();
-  // fuller
   if (!white) {
     ctx.strokeStyle = mix('#14111c', ACCENT, pulse * 0.7);
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(hilt + 8, 0); ctx.lineTo(hilt + L * 0.85, 0); ctx.stroke();
   }
-  // telegraph: the edge ignites
   if (tele > 0.05) {
     ctx.save();
     ctx.globalAlpha = alpha * tele;
@@ -1405,10 +1930,7 @@ function drawBoss() {
     ctx.stroke();
     ctx.globalAlpha = alpha * tele * 0.6;
     const gx = hilt + L * 0.8;
-    const grad = ctx.createRadialGradient(gx, 0, 0, gx, 0, 34);
-    grad.addColorStop(0, ACCENT); grad.addColorStop(1, 'rgba(255,158,44,0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath(); ctx.arc(gx, 0, 34, 0, Math.PI * 2); ctx.fill();
+    ctx.drawImage(GLOW_EMBER, gx - 34, -34, 68, 68);
     ctx.restore();
   }
   ctx.restore();
@@ -1418,6 +1940,18 @@ function drawBoss() {
     ctx.globalAlpha = alpha * tele * 0.85;
     ctx.strokeStyle = ACCENT;
     ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(30, 0); ctx.lineTo(18, -24); ctx.lineTo(-16, -31);
+    ctx.lineTo(-32, -12); ctx.lineTo(-32, 12); ctx.lineTo(-16, 31);
+    ctx.lineTo(18, 24);
+    ctx.closePath(); ctx.stroke();
+    ctx.globalAlpha = alpha;
+  }
+  // EXPOSED — five parries stripped his guard; gold shimmer
+  if (B.exposedT > 0 && !white) {
+    ctx.globalAlpha = alpha * (0.45 + 0.3 * Math.sin(G.time * 8));
+    ctx.strokeStyle = '#e8c15a';
+    ctx.lineWidth = 2.2;
     ctx.beginPath();
     ctx.moveTo(30, 0); ctx.lineTo(18, -24); ctx.lineTo(-16, -31);
     ctx.lineTo(-32, -12); ctx.lineTo(-32, 12); ctx.lineTo(-16, 31);
@@ -1456,11 +1990,20 @@ function drawBoss() {
       ctx.lineWidth = 4 - i;
       ctx.beginPath(); ctx.arc(B.x, B.y, 40 + kk * 280, 0, Math.PI * 2); ctx.stroke();
     }
-    ctx.globalAlpha = (1 - k) * 0.3;
-    const bloom = ctx.createRadialGradient(B.x, B.y, 0, B.x, B.y, 120);
-    bloom.addColorStop(0, ACCENT); bloom.addColorStop(1, 'rgba(255,158,44,0)');
-    ctx.fillStyle = bloom;
-    ctx.beginPath(); ctx.arc(B.x, B.y, 120, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = (1 - k) * 0.35;
+    ctx.drawImage(GLOW_EMBER, B.x - 120, B.y - 120, 240, 240);
+    ctx.restore();
+  }
+
+  // EXPOSED floating cue
+  if (B.exposedT > 0 && !stag && !dying && !carving) {
+    ctx.save();
+    ctx.globalAlpha = alpha * (0.55 + 0.45 * Math.sin(G.time * 7));
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#e8c15a';
+    ctx.font = '600 13px Georgia, serif';
+    ctx.fillText('EXPOSED', B.x, B.y - B.r - 34);
+    ctx.textAlign = 'left';
     ctx.restore();
   }
 }
@@ -1482,11 +2025,9 @@ function drawDamageNumbers() {
 }
 
 /* ---------- UI ---------- */
-// Ornate framed bar: dark socket, beveled frame, damage-ghost, inner sheen.
 function drawBar(x, y, w, h, frac, col, colTop, ghostFrac, opts) {
   opts = opts || {};
   frac = clamp(frac, 0, 1);
-  // socket + frame
   ctx.fillStyle = 'rgba(6,7,11,0.9)';
   ctx.fillRect(x - 3, y - 3, w + 6, h + 6);
   ctx.strokeStyle = opts.frame || 'rgba(148,138,116,0.55)';
@@ -1494,18 +2035,15 @@ function drawBar(x, y, w, h, frac, col, colTop, ghostFrac, opts) {
   ctx.strokeRect(x - 3.5, y - 3.5, w + 7, h + 7);
   ctx.fillStyle = 'rgba(24,22,26,0.95)';
   ctx.fillRect(x, y, w, h);
-  // damage ghost
   if (ghostFrac !== undefined && ghostFrac > frac) {
     ctx.fillStyle = opts.ghostCol || 'rgba(201,163,74,0.75)';
     ctx.fillRect(x + w * frac, y, w * (clamp(ghostFrac, 0, 1) - frac), h);
   }
-  // fill with vertical shading
   if (frac > 0) {
     const g = ctx.createLinearGradient(0, y, 0, y + h);
     g.addColorStop(0, colTop || col); g.addColorStop(0.5, col); g.addColorStop(1, colTop || col);
     ctx.fillStyle = g;
     ctx.fillRect(x, y, w * frac, h);
-    // top sheen
     ctx.fillStyle = 'rgba(255,255,255,0.16)';
     ctx.fillRect(x, y, w * frac, Math.max(1, h * 0.28));
   }
@@ -1516,12 +2054,10 @@ function drawFlask(x, y, s, filled, glow) {
   ctx.translate(x, y);
   ctx.scale(s, s);
   if (filled && glow) {
-    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 16);
-    g.addColorStop(0, 'rgba(255,206,90,0.35)'); g.addColorStop(1, 'rgba(255,206,90,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(0, 0, 16, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(GLOW_GOLD, -16, -16, 32, 32);
+    ctx.globalAlpha = 1;
   }
-  // bulb
   ctx.beginPath();
   ctx.moveTo(-4, -6); ctx.lineTo(4, -6);
   ctx.quadraticCurveTo(9, 2, 6, 8);
@@ -1536,7 +2072,6 @@ function drawFlask(x, y, s, filled, glow) {
   ctx.fill();
   ctx.strokeStyle = filled ? 'rgba(70,52,16,0.9)' : 'rgba(90,82,64,0.7)';
   ctx.lineWidth = 1.2; ctx.stroke();
-  // neck + cork
   ctx.fillStyle = filled ? '#9a7a2a' : 'rgba(58,52,40,0.65)';
   ctx.fillRect(-2.6, -10, 5.2, 4.5);
   ctx.fillStyle = filled ? '#6d4f22' : 'rgba(70,64,50,0.65)';
@@ -1553,6 +2088,16 @@ function drawHUD() {
   const stLow = P.st < 25;
   const stCol = P.stFlash > 0 ? '#e2c14a' : (stLow ? '#7c8f3a' : '#3f9e4d');
   drawBar(26, 48, 214, 11, Math.max(0, P.st) / P.stMax, stCol, P.stFlash > 0 ? '#b89a2c' : '#2c7538');
+
+  // parry streak pips — five clean parries expose him
+  for (let i = 0; i < 5; i++) {
+    ctx.save();
+    ctx.translate(252 + i * 14, 53.5);
+    ctx.rotate(Math.PI / 4);
+    if (i < P.parryStreak) { ctx.fillStyle = '#ffe9a8'; ctx.fillRect(-3.2, -3.2, 6.4, 6.4); }
+    else { ctx.strokeStyle = 'rgba(200,208,226,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(-3, -3, 6, 6); }
+    ctx.restore();
+  }
 
   // flasks
   for (let i = 0; i < P.flaskMax; i++) {
@@ -1573,10 +2118,9 @@ function drawHUD() {
   }
 
   // ---- boss banner ----
-  if (B.hp > 0 || B.state === 'dying') {
+  if ((B.hp > 0 || B.state === 'dying' || B.state === 'carve')) {
     const bw = W * 0.62, bx = (W - bw) / 2, by = H - 44;
     ctx.textAlign = 'center';
-    // name plate
     ctx.font = '600 18px Georgia, "Times New Roman", serif';
     ctx.fillStyle = 'rgba(0,0,0,0.75)';
     ctx.fillText(BOSS_NAME + ' — ' + BOSS_TITLE, W / 2 + 1, by - 11);
@@ -1586,17 +2130,22 @@ function drawHUD() {
     drawBar(bx, by, bw, 11, B.hp / B.hpMax, B.phase2 ? '#c02a24' : '#a8242c', '#6d161c', B.hpGhost / B.hpMax,
       { frame: B.phase2 ? 'rgba(230,180,92,0.7)' : 'rgba(148,138,116,0.55)' });
 
-    // halfway notch marks the phase-2 threshold
     ctx.fillStyle = 'rgba(255,255,255,0.35)';
     ctx.fillRect(bx + bw * 0.5, by - 2, 1, 15);
 
-    // stagger meter — fills as poise breaks, so the player can read the punish window
     if (B.poise > 0.4 && B.state !== 'stagger') {
       const pw = bw * 0.32, px = W / 2 - pw / 2;
       ctx.fillStyle = 'rgba(6,7,11,0.8)';
       ctx.fillRect(px, by + 15, pw, 3);
       ctx.fillStyle = 'rgba(255,233,168,0.85)';
       ctx.fillRect(px, by + 15, pw * clamp(B.poise / 6, 0, 1), 3);
+    }
+    if (B.exposedT > 0) {
+      const ew = bw * 0.4, ex = W / 2 - ew / 2;
+      ctx.fillStyle = 'rgba(6,7,11,0.8)';
+      ctx.fillRect(ex, by + 20, ew, 3);
+      ctx.fillStyle = 'rgba(232,193,90,0.9)';
+      ctx.fillRect(ex, by + 20, ew * (B.exposedT / 10), 3);
     }
     ctx.textAlign = 'left';
   }
@@ -1618,6 +2167,8 @@ function drawControls(y) {
     ['Sprint', 'B  (hold)', 'Space (hold)'],
     ['Light attack', 'RB', 'Left Mouse'],
     ['Heavy attack', 'RT', 'Right Mouse'],
+    ['Block (hold)', 'L1', 'Shift'],
+    ['Parry', 'L2', 'F'],
     ['Lock-on', 'R3', 'Q'],
     ['Flask', 'X', 'E'],
     ['Confirm', 'A / Start', 'Enter']
@@ -1631,22 +2182,21 @@ function drawControls(y) {
   ctx.fillStyle = !pad ? ACCENT : 'rgba(150,150,160,0.5)';
   ctx.fillText('KEYBOARD', colKb, y - 14);
 
-  // divider under the headers
   ctx.strokeStyle = 'rgba(148,138,116,0.25)';
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(W / 2 - 235, y - 7); ctx.lineTo(W / 2 + 235, y - 7); ctx.stroke();
 
   rows.forEach((r, i) => {
-    const ry = y + 8 + i * 19;
+    const ry = y + 8 + i * 18;
     ctx.textAlign = 'right';
-    ctx.font = '13px Georgia, serif';
+    ctx.font = '12.5px Georgia, serif';
     ctx.fillStyle = 'rgba(214,207,194,0.72)';
     ctx.fillText(r[0], colL, ry);
     ctx.textAlign = 'center';
-    ctx.font = (pad ? '600 ' : '') + '13px Georgia, serif';
+    ctx.font = (pad ? '600 ' : '') + '12.5px Georgia, serif';
     ctx.fillStyle = pad ? '#e8e2d0' : 'rgba(150,150,160,0.45)';
     ctx.fillText(r[1], colPad, ry);
-    ctx.font = (!pad ? '600 ' : '') + '13px Georgia, serif';
+    ctx.font = (!pad ? '600 ' : '') + '12.5px Georgia, serif';
     ctx.fillStyle = !pad ? '#e8e2d0' : 'rgba(150,150,160,0.45)';
     ctx.fillText(r[2], colKb, ry);
   });
@@ -1660,58 +2210,54 @@ function drawTitle() {
 
   ctx.textAlign = 'center';
 
-  // title with an ember glow behind it
-  const tg = ctx.createRadialGradient(W / 2, 104, 10, W / 2, 104, 320);
+  const tg = ctx.createRadialGradient(W / 2, 96, 10, W / 2, 96, 300);
   tg.addColorStop(0, 'rgba(255,158,44,0.13)');
   tg.addColorStop(1, 'rgba(255,158,44,0)');
   ctx.fillStyle = tg;
-  ctx.fillRect(0, 0, W, 240);
+  ctx.fillRect(0, 0, W, 220);
 
-  ctx.font = '600 56px Georgia, "Times New Roman", serif';
+  ctx.font = '600 50px Georgia, "Times New Roman", serif';
   ctx.fillStyle = 'rgba(0,0,0,0.8)';
-  ctx.fillText('THE  ASHEN  GATE', W / 2 + 2, 106);
-  const tgrad = ctx.createLinearGradient(0, 74, 0, 116);
+  ctx.fillText('THE  ASHEN  GATE', W / 2 + 2, 98);
+  const tgrad = ctx.createLinearGradient(0, 68, 0, 108);
   tgrad.addColorStop(0, '#f2ece0'); tgrad.addColorStop(1, '#a2916f');
   ctx.fillStyle = tgrad;
-  ctx.fillText('THE  ASHEN  GATE', W / 2, 104);
+  ctx.fillText('THE  ASHEN  GATE', W / 2, 96);
 
-  // filigree rule
   ctx.strokeStyle = 'rgba(201,163,74,0.55)';
   ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(W / 2 - 190, 122); ctx.lineTo(W / 2 - 14, 122); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(W / 2 + 14, 122); ctx.lineTo(W / 2 + 190, 122); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(W / 2 - 190, 114); ctx.lineTo(W / 2 - 14, 114); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(W / 2 + 14, 114); ctx.lineTo(W / 2 + 190, 114); ctx.stroke();
   ctx.fillStyle = 'rgba(201,163,74,0.8)';
-  ctx.save(); ctx.translate(W / 2, 122); ctx.rotate(Math.PI / 4); ctx.fillRect(-4, -4, 8, 8); ctx.restore();
+  ctx.save(); ctx.translate(W / 2, 114); ctx.rotate(Math.PI / 4); ctx.fillRect(-4, -4, 8, 8); ctx.restore();
 
-  ctx.font = 'italic 17px Georgia, serif';
+  ctx.font = 'italic 16px Georgia, serif';
   ctx.fillStyle = 'rgba(214,207,194,0.72)';
-  ctx.fillText('a boss duel', W / 2, 146);
+  ctx.fillText('a boss duel', W / 2, 136);
 
   ctx.fillStyle = ACCENT;
-  ctx.font = '15px Georgia, serif';
-  ctx.fillText('beyond the fog waits  ' + BOSS_NAME + ',  ' + BOSS_TITLE.toLowerCase(), W / 2, 182);
+  ctx.font = '14px Georgia, serif';
+  ctx.fillText('beyond the fog waits  ' + BOSS_NAME + ',  ' + BOSS_TITLE.toLowerCase(), W / 2, 168);
 
-  drawControls(226);
+  drawControls(206);
 
   const blink = 0.55 + 0.45 * Math.sin(G.time * 3);
   ctx.textAlign = 'center';
   ctx.globalAlpha = blink;
   ctx.fillStyle = '#e8e2d0';
-  ctx.font = '600 20px Georgia, serif';
-  ctx.fillText(promptText('confirm') + '  to traverse the fog', W / 2, 452);
+  ctx.font = '600 19px Georgia, serif';
+  ctx.fillText(promptText('confirm') + '  to traverse the fog', W / 2, 476);
   ctx.globalAlpha = 1;
   ctx.textAlign = 'left';
 }
 
 function drawIntro() {
   drawWorld();
-  // fog curtain parting
   const k = clamp(G.screenT / 1.5, 0, 1);
   ctx.fillStyle = `rgba(150,165,205,${0.55 * (1 - k)})`;
   ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = `rgba(5,6,10,${0.5 * (1 - k)})`;
   ctx.fillRect(0, 0, W, H);
-  // boss name reveal
   ctx.textAlign = 'center';
   ctx.globalAlpha = clamp((G.screenT - 0.3) / 0.7, 0, 1);
   ctx.fillStyle = '#d6cfc2';
@@ -1734,7 +2280,6 @@ function drawDead() {
   ctx.translate(W / 2, H / 2);
   const grow = 1 + 0.05 * clamp(t / 2, 0, 1);
   ctx.scale(grow, grow);
-  // dark band behind the text, classic treatment
   ctx.globalAlpha = a * 0.75;
   const band = ctx.createLinearGradient(-W / 2, 0, W / 2, 0);
   band.addColorStop(0, 'rgba(0,0,0,0)'); band.addColorStop(0.5, 'rgba(0,0,0,0.85)'); band.addColorStop(1, 'rgba(0,0,0,0)');
@@ -1766,7 +2311,6 @@ function drawVictory() {
   ctx.fillRect(0, 0, W, H);
   const a = clamp((t - 0.3) / 1.4, 0, 1);
   ctx.textAlign = 'center';
-  // gold light blooming from the centre
   ctx.globalAlpha = a * 0.55;
   const bloom = ctx.createRadialGradient(W / 2, H / 2, 10, W / 2, H / 2, 420);
   bloom.addColorStop(0, 'rgba(232,193,90,0.5)');
@@ -1774,7 +2318,6 @@ function drawVictory() {
   bloom.addColorStop(1, 'rgba(232,193,90,0)');
   ctx.fillStyle = bloom;
   ctx.fillRect(0, 0, W, H);
-  // rising motes of light
   ctx.globalAlpha = a;
   ctx.fillStyle = 'rgba(255,226,150,0.7)';
   for (let i = 0; i < 26; i++) {
@@ -1805,13 +2348,13 @@ function drawVictory() {
 function drawWorld() {
   drawFloor();
   drawRing();
+  drawCarving();
   drawSlashes();
   // draw whichever is further "back" first, so overlap reads correctly
   if (B.y <= P.y) { drawBoss(); drawPlayer(); } else { drawPlayer(); drawBoss(); }
   drawParticles();
   drawDamageNumbers();
   drawFogWall();
-  // vignette
   const v = ctx.createRadialGradient(W / 2, H / 2, 220, W / 2, H / 2, 560);
   v.addColorStop(0, 'rgba(0,0,0,0)');
   v.addColorStop(1, 'rgba(0,0,0,0.42)');
@@ -1867,7 +2410,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, resetFight };
+window.__game = { G, P, B, Input, resetFight, damagePlayer, damageBoss, onParrySuccess, bossStartAttack, ATK };
 </script>
 </body>
 </html>
