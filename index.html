@@ -387,6 +387,22 @@ const FOG_SPRITE = (() => {
   return s;
 })();
 
+const FOG_BAND = (() => {
+  const s = document.createElement('canvas');
+  s.width = 320; s.height = 72;
+  const c = s.getContext('2d');
+  const rr2 = mulberry32(77);
+  for (let i = 0; i < 22; i++) {
+    const x = rr2() * 320, y = 18 + rr2() * 36, r = 24 + rr2() * 34;
+    const g = c.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(120,128,150,0.10)');
+    g.addColorStop(1, 'rgba(120,128,150,0)');
+    c.fillStyle = g;
+    c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+  }
+  return s;
+})();
+
 /* shared sword profile — Nomad's blade and the five fallen ones are the SAME sword */
 function drawSwordProfile(c, len, opts) {
   opts = opts || {};
@@ -444,23 +460,83 @@ const ARENA_BAKE = (() => {
   const c = s.getContext('2d');
   const rr = mulberry32(90210);
 
-  // ---- floor: dark stone with per-stone shade + cracks (unchanged base look) ----
+  // ---- floor: irregular flagstones, per-stone shade, cracks, ash drifts ----
   c.fillStyle = '#0b0d12';
   c.fillRect(0, 0, W, H);
-  const g = c.createRadialGradient(W / 2, H / 2, 60, W / 2, H / 2, 480);
-  g.addColorStop(0, '#232939'); g.addColorStop(0.7, '#191e2b'); g.addColorStop(1, '#10131c');
-  c.fillStyle = g;
+  c.save();
+  c.beginPath(); c.rect(ARENA.x, ARENA.y, ARENA.w, ARENA.h); c.clip();
+  c.fillStyle = '#12141b';
   c.fillRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h);
-  c.strokeStyle = 'rgba(255,255,255,0.028)';
-  c.lineWidth = 1;
-  for (let gx = ARENA.x + 54; gx < ARENA.x + ARENA.w; gx += 54) { c.beginPath(); c.moveTo(gx, ARENA.y); c.lineTo(gx, ARENA.y + ARENA.h); c.stroke(); }
-  for (let gy = ARENA.y + 54; gy < ARENA.y + ARENA.h; gy += 54) { c.beginPath(); c.moveTo(ARENA.x, gy); c.lineTo(ARENA.x + ARENA.w, gy); c.stroke(); }
-  for (let i = 0; i < 26; i++) {
-    const x = rr() * ARENA.w + ARENA.x, y = rr() * ARENA.h + ARENA.y;
-    const a = rr() * Math.PI * 2, l = 14 + rr() * 46;
-    c.strokeStyle = 'rgba(255,255,255,0.07)'; c.lineWidth = 1;
-    c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); c.stroke();
+  let fy = ARENA.y - 10;
+  while (fy < ARENA.y + ARENA.h + 20) {
+    const rh = 38 + rr() * 18;
+    let fx = ARENA.x - 30 - rr() * 30;
+    while (fx < ARENA.x + ARENA.w + 20) {
+      const rw = 42 + rr() * 30;
+      // lit from the arena's heart, falling off toward the walls
+      const lit = 1 - clamp(dist(fx + rw / 2, fy + rh / 2, W / 2, H / 2) / 470, 0, 1);
+      const shade = 20 + lit * 26 + rr() * 7;
+      c.fillStyle = `rgb(${shade | 0},${(shade + 2) | 0},${(shade + 9) | 0})`;
+      const j = () => (rr() - 0.5) * 5;
+      c.beginPath();
+      c.moveTo(fx + j(), fy + j());
+      c.lineTo(fx + rw + j(), fy + j());
+      c.lineTo(fx + rw + j(), fy + rh + j());
+      c.lineTo(fx + j(), fy + rh + j());
+      c.closePath(); c.fill();
+      c.strokeStyle = '#0a0b10';
+      c.lineWidth = 1.4;
+      c.stroke();
+      if (rr() < 0.2) {          // a cracked stone
+        c.strokeStyle = 'rgba(6,7,10,0.8)';
+        c.lineWidth = 1;
+        const cx0 = fx + rr() * rw, cy0 = fy + rr() * rh;
+        c.beginPath(); c.moveTo(cx0, cy0);
+        c.lineTo(cx0 + (rr() - 0.5) * 26, cy0 + (rr() - 0.5) * 22);
+        c.lineTo(cx0 + (rr() - 0.5) * 44, cy0 + (rr() - 0.5) * 40);
+        c.stroke();
+      }
+      if (rr() < 0.13) {         // ash drifted into the seams
+        const ag = c.createRadialGradient(fx + rw / 2, fy + rh / 2, 0, fx + rw / 2, fy + rh / 2, rw * 0.7);
+        ag.addColorStop(0, 'rgba(170,165,155,0.07)');
+        ag.addColorStop(1, 'rgba(170,165,155,0)');
+        c.fillStyle = ag;
+        c.fillRect(fx - 10, fy - 10, rw + 20, rh + 20);
+      }
+      fx += rw;
+    }
+    fy += rh;
   }
+  // scorch marks radiating from the center
+  c.save();
+  c.translate(W / 2, H / 2);
+  for (let i = 0; i < 11; i++) {
+    c.save();
+    c.rotate(rr() * Math.PI * 2);
+    const l0 = 30 + rr() * 30, l1 = l0 + 60 + rr() * 110;
+    c.fillStyle = `rgba(4,4,6,${0.16 + rr() * 0.12})`;
+    c.beginPath();
+    c.moveTo(l0, -4 - rr() * 8);
+    c.lineTo(l1, -1);
+    c.lineTo(l1, 1);
+    c.lineTo(l0, 4 + rr() * 8);
+    c.closePath(); c.fill();
+    c.restore();
+  }
+  const cg2 = c.createRadialGradient(0, 0, 0, 0, 0, 70);
+  cg2.addColorStop(0, 'rgba(3,3,5,0.38)');
+  cg2.addColorStop(1, 'rgba(3,3,5,0)');
+  c.fillStyle = cg2;
+  c.beginPath(); c.arc(0, 0, 70, 0, Math.PI * 2); c.fill();
+  c.restore();
+  // a cold pool of light over the arena's heart, so the duel stays readable
+  const lg = c.createRadialGradient(W / 2, H / 2, 80, W / 2, H / 2, 420);
+  lg.addColorStop(0, 'rgba(96,110,150,0.14)');
+  lg.addColorStop(0.6, 'rgba(96,110,150,0.05)');
+  lg.addColorStop(1, 'rgba(96,110,150,0)');
+  c.fillStyle = lg;
+  c.fillRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h);
+  c.restore();
 
   // ---- ritual sigil at the arena's heart ----
   c.save();
@@ -643,7 +719,7 @@ const P = {  // Nomad
   x: 0, y: 0, r: 13,
   hp: 100, hpMax: 100, hpGhost: 100,
   st: 100, stMax: 100, stDelay: 0, stFlash: 0,
-  walkT: 0, trail: [], scarf: [],
+  walkT: 0, trail: [], scarf: [], speedNow: 0,
   blocking: false, parryStreak: 0,
   flasks: 3, flaskMax: 3,
   face: 0, moveDirX: 1, moveDirY: 0,
@@ -659,7 +735,7 @@ const BOSS_NAME = 'ALDRIC';
 const BOSS_TITLE = 'Who Was Given the Blade';
 const B = {  // boss
   x: 0, y: 0, r: 34,
-  hp: 1000, hpMax: 1000, hpGhost: 1000,
+  hp: 1200, hpMax: 1200, hpGhost: 1200,
   face: Math.PI,
   phase2: false,
   state: 'idle',        // idle | attack | stagger | break | daze | hesitate | chainPause | recoil | carve
@@ -757,7 +833,7 @@ const ATK2 = {
 function resetFight() {
   P.x = ARENA.x + 130; P.y = ARENA.y + ARENA.h / 2;
   P.hp = P.hpMax; P.hpGhost = P.hpMax; P.st = P.stMax; P.stDelay = 0; P.stFlash = 0;
-  P.walkT = 0; P.trail.length = 0; P.blocking = false; P.parryStreak = 0;
+  P.walkT = 0; P.trail.length = 0; P.speedNow = 0; P.blocking = false; P.parryStreak = 0;
   P.scarf = []; for (let i = 0; i < 6; i++) P.scarf.push({ x: P.x, y: P.y });
   P.flasks = P.flaskMax; P.face = 0; P.moveDirX = 1; P.moveDirY = 0;
   P.locked = false; P.act = null; P.hurtInv = 0; P.kbX = P.kbY = 0; P.flash = 0; P.dead = false;
@@ -900,7 +976,8 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
   if (P.blocking && P.st > 0) {
     const toSrc = Math.atan2(srcY - P.y, srcX - P.x);
     if (Math.abs(angDiff(P.face, toSrc)) < 1.75) {
-      const cost = 14 + dmg * 0.45;
+      // the shard's quick cuts are hard to catch — they eat far more stamina through a guard
+      const cost = (14 + dmg * 0.45) * (B.broken ? 1.5 : 1);
       if (P.st >= cost) {                    // the guard holds — chip damage + stamina
         P.st -= cost; P.stDelay = 0.7;
         P.hp -= Math.max(1, Math.round(dmg * 0.22));
@@ -1145,11 +1222,13 @@ function updatePlayer(dt) {
   }
 
   /* ---- movement ---- */
+  P.speedNow = 0;
   if (speedMul > 0 || !P.act) {
     const base = sprinting ? 265 : (P.blocking ? 96 : 175);
     const sp = base * mag * (P.act ? speedMul : 1);
     P.x += mvX * sp * dt; P.y += mvY * sp * dt;
     P.walkT += sp * dt * 0.05;
+    P.speedNow = sp;
     // closing distance reads as aggression
     if (mag > 0.01) {
       const ux = B.x - P.x, uy = B.y - P.y, ul = Math.hypot(ux, uy) || 1;
@@ -1225,6 +1304,11 @@ function updateBoss(dt) {
   // phase-2 embers drift off him
   if (B.phase2 && B.state !== 'dying' && B.state !== 'carve' && Math.random() < dt * 8) {
     spawnDrift(B.x + rand(-26, 26), B.y + rand(-26, 26), rand(-10, 10), rand(-48, -22), ACCENT, rand(0.4, 0.9), rand(1.5, 3));
+  }
+  // ash sloughs off his shoulders while he stands
+  if ((B.state === 'idle' || B.state === 'chainPause') && Math.random() < dt * 3) {
+    const sa = B.face + (Math.random() < 0.5 ? 1 : -1) * 1.5;
+    spawnDrift(B.x + Math.cos(sa) * 26, B.y + Math.sin(sa) * 26, rand(-6, 6), rand(12, 32), 'rgba(150,146,138,0.5)', rand(0.5, 1.1), rand(1.4, 2.4));
   }
 
   /* ---- THE CARVING — the ending ---- */
@@ -1659,7 +1743,9 @@ function drawFloor() {
     ctx.quadraticCurveTo(c[0] + 6, c[1] - 4, c[0], c[1] - 3);
     ctx.quadraticCurveTo(c[0] - 6, c[1] - 4, c[0], c[1] - 12 - 5 * fl);
     ctx.fill();
-    if (Math.random() < 0.08) spawnDrift(c[0] + rand(-4, 4), c[1] - 10, rand(-6, 6), rand(-40, -22), ACCENT, rand(0.6, 1.2), rand(1.2, 2.2));
+    // a steady column of embers rising off each flame
+    if (Math.random() < 0.25) spawnDrift(c[0] + rand(-4, 4), c[1] - 10, rand(-7, 7), rand(-52, -26), ACCENT, rand(0.6, 1.3), rand(1.2, 2.4));
+    if (Math.random() < 0.1) spawnDrift(c[0] + rand(-7, 7), c[1] - 6, rand(-5, 5), rand(-30, -16), 'rgba(255,190,120,0.5)', rand(0.8, 1.5), 1.4);
   }
 
   // the gate bar, once he has lifted it: resting against the frame. Never remarked on.
@@ -1697,6 +1783,13 @@ function drawFloor() {
     const wob = Math.sin(G.time * 0.8 + i) * 6;
     ctx.fillRect(ARENA.x + sx + wob, ARENA.y + ARENA.h - sy, 1.6, 1.6);
   }
+
+  // a low fog band, drifting slowly across the floor
+  const fx1 = ((G.time * 7) % (W + 340)) - 340;
+  ctx.globalAlpha = 0.5;
+  ctx.drawImage(FOG_BAND, fx1, 348, 430, 96);
+  ctx.drawImage(FOG_BAND, W - fx1 - 460, 236, 460, 100);
+  ctx.globalAlpha = 1;
 }
 
 function drawFogWall() {
@@ -1925,22 +2018,38 @@ function drawPlayer() {
       ctx.beginPath(); ctx.arc(0, 0, 6.5, a0, a0 + 1.1); ctx.stroke();
     }
   } else {
-    const sway = Math.sin(P.walkT) * 1.4;
+    const sprintingNow = P.speedNow > 220;
+    const idleBob = P.speedNow < 5 ? Math.sin(G.time * 2.1) * 0.8 : 0;   // breathing
+    const sway = Math.sin(P.walkT) * 1.4 + idleBob;
     ctx.translate(0, sway);
+    if (sprintingNow) ctx.rotate(0.08);                                  // the lean
 
-    // cape
-    const cs = Math.sin(G.time * 2.6 + P.walkT) * 3;
+    // cape — flutters harder with speed
+    const flut = 3 + Math.min(6, P.speedNow * 0.02);
+    const cs = Math.sin(G.time * (2.6 + P.speedNow * 0.015) + P.walkT) * flut;
     const cg = ctx.createLinearGradient(-22, 0, -2, 0);
     cg.addColorStop(0, '#2d3a63'); cg.addColorStop(1, '#5265a0');
     ctx.fillStyle = white ? '#ffffff' : cg;
     ctx.beginPath();
     ctx.moveTo(-2, -9);
-    ctx.quadraticCurveTo(-15, -8 + cs, -23, -3 + cs);
-    ctx.lineTo(-23, 4 + cs);
+    ctx.quadraticCurveTo(-15, -8 + cs, -23 - flut * 0.5, -3 + cs);
+    ctx.lineTo(-23 - flut * 0.5, 4 + cs);
     ctx.quadraticCurveTo(-15, 8 + cs, -2, 9);
     ctx.closePath(); ctx.fill();
     ctx.strokeStyle = white ? '#ffffff' : '#1a2138';
     ctx.lineWidth = 1.2; ctx.stroke();
+
+    // sprint speed lines
+    if (sprintingNow) {
+      ctx.strokeStyle = 'rgba(200,212,236,0.3)';
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.moveTo(-18 - i * 6, -7 + i * 7);
+        ctx.lineTo(-29 - i * 7, -7 + i * 7);
+        ctx.stroke();
+      }
+    }
 
     // armored torso
     const bg = ctx.createRadialGradient(-3, -3, 2, 0, 0, 13);
