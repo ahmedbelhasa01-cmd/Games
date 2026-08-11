@@ -164,6 +164,12 @@ const sfx = {
     _noise(ac, 0.28, 'bandpass', 900 + Math.random() * 500, 500, 0.2, t);
     _tone(ac, 'sawtooth', 220 + Math.random() * 120, 140, 0.2, 0.05, t);
   }); },
+  chargeFull() { this._run((ac, t) => { _tone(ac, 'sine', 660, 720, 0.14, 0.16, t); _tone(ac, 'sine', 990, 1020, 0.18, 0.1, t + 0.04); }); },
+  stab() { this._run((ac, t) => {
+    _tone(ac, 'sine', 190, 60, 0.2, 0.7, t);
+    _noise(ac, 0.12, 'bandpass', 1800, 500, 0.5, t);
+    _noise(ac, 0.3, 'lowpass', 700, 90, 0.55, t + 0.02);
+  }); },
   maulSwing() { this._run((ac, t) => { _noise(ac, 0.32, 'bandpass', 140, 700, 0.7, t); _tone(ac, 'sawtooth', 90, 45, 0.28, 0.14, t); }); },
   shardSwing() { this._run((ac, t) => _noise(ac, 0.13, 'bandpass', 500, 2300, 0.5, t)); },
   maulImpact() { this._run((ac, t) => {
@@ -230,7 +236,7 @@ const Input = {
   // unified per-frame edges:
   light: false, heavy: false, lock: false, flask: false, confirm: false, parry: false,
   moveX: 0, moveY: 0, moveMag: 0,
-  sprint: false, blockHeld: false,
+  sprint: false, blockHeld: false, heavyHeld: false, mouseRDown: false,
   dodgeWasDown: false, dodgeHoldT: 0, dodgeSprinted: false,
   buffer: null,                 // {act:'roll'|'light'|'heavy'|'parry', t: ms}
 
@@ -328,6 +334,7 @@ const Input = {
     }
     this.dodgeWasDown = down;
     this.blockHeld = padBlock || kbBlock;
+    this.heavyHeld = this.prevRT || this.mouseRDown;   // for the charged heavy
 
     if (this.light) this.setBuffer('light');
     if (this.heavy) this.setBuffer('heavy');
@@ -349,9 +356,10 @@ window.addEventListener('keyup', e => { Input.keys[e.code] = false; });
 canvas.addEventListener('mousedown', e => {
   Input.device = 'kb';
   if (e.button === 0) Input.kbEdges.light = true;
-  if (e.button === 2) Input.kbEdges.heavy = true;
+  if (e.button === 2) { Input.kbEdges.heavy = true; Input.mouseRDown = true; }
   e.preventDefault();
 });
+window.addEventListener('mouseup', e => { if (e.button === 2) Input.mouseRDown = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 window.addEventListener('gamepadconnected', () => { Input.device = 'pad'; AudioSys.ensure(); });
 
@@ -719,7 +727,7 @@ const P = {  // Nomad
   x: 0, y: 0, r: 13,
   hp: 100, hpMax: 100, hpGhost: 100,
   st: 100, stMax: 100, stDelay: 0, stFlash: 0,
-  walkT: 0, trail: [], scarf: [], speedNow: 0,
+  walkT: 0, trail: [], scarf: [], speedNow: 0, swingAlt: false,
   blocking: false, parryStreak: 0,
   flasks: 3, flaskMax: 3,
   face: 0, moveDirX: 1, moveDirY: 0,
@@ -1135,10 +1143,41 @@ function updatePlayer(dt) {
   const sprinting = Input.sprint && !busy && !P.blocking && mag > 0.01 && P.st > 0;
 
   /* ---- start buffered actions ---- */
+  // the tail of a roll can flow straight into a lunging cut
+  const rollTail = P.act && P.act.type === 'roll' && P.act.t > P.act.dur * 0.55;
+  if (rollTail && G.screen === 'fight' && Input.peekBuffer() === 'light' && P.st > 0) {
+    Input.consumeBuffer();
+    spendStamina(15);
+    if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
+    else P.face = Math.atan2(P.act.dirY, P.act.dirX);
+    P.act = { type: 'lunge', t: 0, dur: 0.42, hitDone: false, face: P.face };
+    G.lastAggro = G.time;
+    sfx.swing(false);
+  }
+
   const canAct = !P.act || (P.act.type === 'flask'); // roll may cancel flask (wastes rest of the sip)
   if (canAct && G.screen === 'fight') {
     const want = Input.peekBuffer();
-    if (want === 'roll' && P.st > 0) {
+    // RIPOSTE — he's reeling off a parry, and you're close, facing him
+    if (want === 'light' && !P.act && P.st > 0 && B.state === 'recoil' &&
+        dist(P.x, P.y, B.x, B.y) < B.r + 64 &&
+        Math.abs(angDiff(P.face, Math.atan2(B.y - P.y, B.x - P.x))) < 1.0) {
+      Input.consumeBuffer();
+      spendStamina(20);
+      P.face = Math.atan2(B.y - P.y, B.x - P.x);
+      P.act = { type: 'riposte', t: 0, dur: 0.66, hitDone: false, face: P.face };
+      G.lastAggro = G.time;
+      sfx.swing(true);
+    } else if (want === 'light' && !P.act && P.st > 0 && sprinting) {
+      // a sprint flows into the same lunging cut
+      Input.consumeBuffer();
+      spendStamina(15);
+      if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
+      else P.face = Math.atan2(P.moveDirY, P.moveDirX);
+      P.act = { type: 'lunge', t: 0, dur: 0.42, hitDone: false, face: P.face };
+      G.lastAggro = G.time;
+      sfx.swing(false);
+    } else if (want === 'roll' && P.st > 0) {
       Input.consumeBuffer();
       spendStamina(25);
       let dx = P.moveDirX, dy = P.moveDirY;
@@ -1153,7 +1192,9 @@ function updatePlayer(dt) {
       const heavy = want === 'heavy';
       spendStamina(heavy ? 35 : 20);
       if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
-      P.act = { type: want, t: 0, dur: heavy ? 0.8 : 0.45, hitDone: false, face: P.face };
+      P.swingAlt = !P.swingAlt;              // alternate the cut's direction
+      P.act = { type: want, t: 0, dur: heavy ? 0.8 : 0.45, hitDone: false, face: P.face,
+                alt: P.swingAlt ? -1 : 1, charging: heavy, chargeT: 0, chargeToll: false };
       G.lastAggro = G.time;                  // swinging reads as aggression
       sfx.swing(heavy);
     } else if (want === 'parry' && !P.act && P.st > 0) {
@@ -1194,16 +1235,76 @@ function updatePlayer(dt) {
       speedMul = 0;
       const heavy = a.type === 'heavy';
       const wStart = heavy ? 0.34 : 0.14, wEnd = heavy ? 0.5 : 0.27;
-      if (heavy && a.t > 0.15 && a.t < 0.45) { P.x += Math.cos(a.face) * 150 * dt; P.y += Math.sin(a.face) * 150 * dt; }
-      if (!a.hitDone && a.t >= wStart && a.t <= wEnd) {
+      // CHARGED HEAVY: keep the trigger held and he holds the wind-up,
+      // the blade gathering light — release (or 0.8s) lets it fall harder.
+      if (heavy && a.charging) {
+        if (a.t >= 0.30) {
+          a.t = 0.30;                         // held at the top of the wind-up
+          if (!Input.heavyHeld) {             // released: a tap is exactly the old heavy
+            a.charging = false;
+            if (a.chargeT > 0.1) sfx.swing(true);
+          } else {
+            a.chargeT = Math.min(0.8, a.chargeT + dt);
+            if (a.chargeT >= 0.8) {
+              if (!a.chargeToll) { a.chargeToll = true; sfx.chargeFull(); }
+              a.charging = false;
+              sfx.swing(true);
+            }
+          }
+        }
+      }
+      const power = heavy ? (1 + (a.chargeT || 0) * 0.6) : 1;   // 58 -> up to ~86
+      if (heavy && !a.charging && a.t > 0.15 && a.t < 0.45) {
+        const step = 150 * (1 + (a.chargeT || 0) * 0.5);
+        P.x += Math.cos(a.face) * step * dt; P.y += Math.sin(a.face) * step * dt;
+      }
+      if (!a.hitDone && !a.charging && a.t >= wStart && a.t <= wEnd) {
         const r1 = heavy ? 94 : 80, half = heavy ? 1.35 : 1.2;
         const d = dist(P.x, P.y, B.x, B.y);
         if (d < r1 + B.r && Math.abs(angDiff(a.face, Math.atan2(B.y - P.y, B.x - P.x))) < half + Math.asin(clamp(B.r / Math.max(d, B.r), 0, 1))) {
           a.hitDone = true;
-          damageBoss(heavy ? 58 : 30);
+          damageBoss(Math.round((heavy ? 58 : 30) * power));
+          if (heavy && a.chargeT > 0.4) { G.hitstop = Math.max(G.hitstop, 0.1); G.shake = Math.max(G.shake, 8); }
         }
       }
-      if (a.t >= wStart && !a.slashed) { a.slashed = true; addSlash(P.x, P.y, a.face, heavy ? 94 : 80, heavy ? 1.3 : 1.1, '#dfe6f2', 0.16); }
+      if (!a.charging && a.t >= wStart && !a.slashed) { a.slashed = true; addSlash(P.x, P.y, a.face, heavy ? 94 : 80, heavy ? 1.3 : 1.1, '#dfe6f2', 0.16); }
+      if (!a.charging && a.t >= a.dur) P.act = null;
+    } else if (a.type === 'lunge') {
+      // out of a roll or sprint: a fast forward-lunging cut
+      speedMul = 0;
+      const k = a.t / a.dur;
+      if (a.t < 0.18) { P.x += Math.cos(a.face) * 300 * (1 - k) * dt; P.y += Math.sin(a.face) * 300 * (1 - k) * dt; }
+      if (!a.hitDone && a.t >= 0.08 && a.t <= 0.22) {
+        const d = dist(P.x, P.y, B.x, B.y);
+        if (d < 88 + B.r && Math.abs(angDiff(a.face, Math.atan2(B.y - P.y, B.x - P.x))) < 0.9 + Math.asin(clamp(B.r / Math.max(d, B.r), 0, 1))) {
+          a.hitDone = true;
+          damageBoss(26);
+        }
+      }
+      if (a.t >= 0.08 && !a.slashed) { a.slashed = true; addSlash(P.x, P.y, a.face, 88, 0.8, '#dfe6f2', 0.14); }
+      if (a.t >= a.dur) P.act = null;
+    } else if (a.type === 'riposte') {
+      // the parry's true payoff: a step-in critical stab
+      speedMul = 0;
+      if (a.t < 0.12) { P.x += Math.cos(a.face) * 260 * dt; P.y += Math.sin(a.face) * 260 * dt; }
+      if (!a.hitDone && a.t >= 0.16) {
+        a.hitDone = true;
+        damageBoss(70);
+        sfx.stab();
+        G.hitstop = Math.max(G.hitstop, 0.13);
+        G.shake = Math.max(G.shake, 10);
+        rumble(220, 0.7, 0.9);
+        const hx = B.x - Math.cos(a.face) * B.r * 0.5, hy = B.y - Math.sin(a.face) * B.r * 0.5;
+        spawnParticles(hx, hy, 26, '#ffe9a8', 280, 0.6);
+        spawnParticles(hx, hy, 10, '#f2f6ff', 340, 0.35);
+        // driven back off the blade
+        if (B.state === 'recoil') {
+          B.stateT = Math.min(B.stateT, 0.15);
+          B.x += Math.cos(a.face) * 20; B.y += Math.sin(a.face) * 20;
+          B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
+          B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
+        }
+      }
       if (a.t >= a.dur) P.act = null;
     } else if (a.type === 'parry') {
       speedMul = 0;
@@ -2093,12 +2194,32 @@ function drawPlayer() {
 
     // sword — held low; swings across on attacks, raised flat when guarding
     let swordAng = 0.75, swordLen = 30;
+    let trailFrom = null;   // when set, ghost blades sweep behind the cut
     if (P.act && (P.act.type === 'light' || P.act.type === 'heavy')) {
       const heavy = P.act.type === 'heavy';
-      const wEnd = heavy ? 0.5 : 0.27;
-      const k = clamp(P.act.t / wEnd, 0, 1);
-      swordAng = lerp(-1.6, 1.3, k);
-      swordLen = heavy ? 36 : 32;
+      const alt = P.act.alt || 1;
+      if (heavy && P.act.charging) {
+        // held at the top of the wind-up; trembles as the charge builds
+        const ch = P.act.chargeT || 0;
+        swordAng = -1.7 * alt + Math.sin(G.time * (20 + ch * 30)) * 0.03 * ch;
+        swordLen = 36;
+      } else {
+        const wEnd = heavy ? 0.5 : 0.27;
+        const k = clamp(P.act.t / wEnd, 0, 1);
+        swordAng = lerp(-1.6 * alt, 1.3 * alt, k);
+        swordLen = heavy ? 36 : 32;
+        if (k > 0.3 && k < 1) trailFrom = { ang: swordAng, step: -0.38 * alt, len: swordLen };
+      }
+    } else if (P.act && P.act.type === 'lunge') {
+      const k = clamp(P.act.t / 0.22, 0, 1);
+      swordAng = lerp(-0.9, 0.05, k);          // whips forward into a thrust
+      swordLen = 36;
+      if (k > 0.4 && k < 1) trailFrom = { ang: swordAng, step: -0.3, len: 36 };
+    } else if (P.act && P.act.type === 'riposte') {
+      const k = P.act.t;
+      if (k < 0.16) { swordAng = lerp(-1.9, 0.02, k / 0.16); swordLen = 34; }   // raised high, driven down and in
+      else if (k < 0.4) { swordAng = 0.02; swordLen = 40; }                     // buried to the guard
+      else { swordAng = lerp(0.02, 0.75, (k - 0.4) / 0.26); swordLen = 34; }    // dragged back out
     } else if (P.act && P.act.type === 'parry') {
       swordAng = lerp(0.4, -1.7, clamp(P.act.t / 0.2, 0, 1));
       swordLen = 32;
@@ -2106,10 +2227,34 @@ function drawPlayer() {
       swordAng = -1.15;
       swordLen = 32;
     }
+    // ghost blades trailing the arc
+    if (trailFrom) {
+      for (let i = 1; i <= 3; i++) {
+        ctx.save();
+        ctx.globalAlpha = 0.26 - i * 0.07;
+        ctx.translate(3, 9);
+        ctx.rotate(trailFrom.ang + trailFrom.step * i);
+        drawSword(trailFrom.len, false);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+    }
     ctx.save();
     ctx.translate(3, 9);
     ctx.rotate(swordAng);
     drawSword(swordLen, white);
+    // the charge gathers pale-blue light along the blade
+    if (P.act && P.act.type === 'heavy' && P.act.charging && P.act.chargeT > 0.05) {
+      const ch = P.act.chargeT / 0.8;
+      ctx.globalAlpha = 0.35 + ch * 0.45;
+      ctx.drawImage(GLOW_BLUE, swordLen - 12, -12, 24 + ch * 10, 24 + ch * 10);
+      ctx.globalAlpha = 1;
+      if (ch >= 1) {
+        ctx.strokeStyle = 'rgba(220,235,255,0.8)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(3, 0); ctx.lineTo(swordLen - 2, 0); ctx.stroke();
+      }
+    }
     ctx.restore();
 
     // guard shimmer — a ward of steel across the facing arc
@@ -2434,6 +2579,19 @@ function drawBoss() {
     ctx.globalAlpha = alpha;
   }
   ctx.restore();
+
+  // reeling from a parry — a gold glint marks the opening for the riposte
+  if (B.state === 'recoil') {
+    const pu = 0.6 + 0.4 * Math.sin(G.time * 11);
+    ctx.save();
+    ctx.globalAlpha = alpha * pu;
+    ctx.drawImage(GLOW_GOLD, B.x - 14, B.y - 14, 28, 28);
+    ctx.translate(B.x, B.y - B.r - 18);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = '#ffe9a8';
+    ctx.fillRect(-3.5, -3.5, 7, 7);
+    ctx.restore();
+  }
 
   // stagger — "STANCE BROKEN" cue, drawn unrotated so it stays readable
   if (stag) {
