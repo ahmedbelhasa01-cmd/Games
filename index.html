@@ -79,7 +79,16 @@ const AudioSys = {
       return this.ac;
     } catch (e) { return null; }
   },
-  ready() { return this.ac && this.ac.state === 'running'; }
+  ready() { return this.ac && this.ac.state === 'running'; },
+  duck(level, secs) {
+    try {
+      if (!this.ac || !this.master) return;
+      const now = this.ac.currentTime;
+      this.master.gain.cancelScheduledValues(now);
+      this.master.gain.setValueAtTime(this.master.gain.value, now);
+      this.master.gain.linearRampToValueAtTime(level, now + secs);
+    } catch (e) {}
+  }
 };
 ['pointerdown', 'touchstart', 'keydown', 'mousedown'].forEach(ev =>
   window.addEventListener(ev, () => AudioSys.ensure(), { passive: true }));
@@ -154,6 +163,43 @@ const sfx = {
   scrapeOne() { this._run((ac, t) => {
     _noise(ac, 0.28, 'bandpass', 900 + Math.random() * 500, 500, 0.2, t);
     _tone(ac, 'sawtooth', 220 + Math.random() * 120, 140, 0.2, 0.05, t);
+  }); },
+  maulSwing() { this._run((ac, t) => { _noise(ac, 0.32, 'bandpass', 140, 700, 0.7, t); _tone(ac, 'sawtooth', 90, 45, 0.28, 0.14, t); }); },
+  shardSwing() { this._run((ac, t) => _noise(ac, 0.13, 'bandpass', 500, 2300, 0.5, t)); },
+  maulImpact() { this._run((ac, t) => {
+    _tone(ac, 'sine', 70, 28, 0.5, 1.0, t);
+    _noise(ac, 0.35, 'lowpass', 800, 90, 0.8, t);
+    _noise(ac, 0.08, 'highpass', 1500, 3000, 0.25, t);
+  }); },
+  fissure() { this._run((ac, t) => { _noise(ac, 0.5, 'bandpass', 300, 1400, 0.35, t); _tone(ac, 'sawtooth', 100, 55, 0.4, 0.12, t); }); },
+  chargeWhoosh() { this._run((ac, t) => _noise(ac, 0.55, 'bandpass', 160, 620, 0.5, t)); },
+  daze() { this._run((ac, t) => {
+    _tone(ac, 'square', 320, 180, 0.3, 0.25, t);
+    _tone(ac, 'sine', 180, 90, 0.45, 0.4, t);
+    _noise(ac, 0.3, 'lowpass', 1000, 200, 0.5, t);
+  }); },
+  crack() { this._run((ac, t) => {
+    // the haft breaking over his knee — layered snaps over a deep body
+    _noise(ac, 0.05, 'highpass', 1800, 4200, 0.9, t);
+    _tone(ac, 'square', 900, 220, 0.05, 0.5, t);
+    _tone(ac, 'square', 700, 160, 0.06, 0.45, t + 0.03);
+    _tone(ac, 'square', 500, 120, 0.08, 0.4, t + 0.07);
+    _tone(ac, 'sawtooth', 130, 40, 0.5, 0.55, t + 0.02);
+    _noise(ac, 0.45, 'lowpass', 900, 100, 0.7, t + 0.02);
+  }); },
+  mourn() { this._run((ac, t) => {
+    // a slow minor swell where the swing should have been
+    [[130.8, 0.3, 0], [155.6, 0.22, 0.09], [65.4, 0.26, 0.05]].forEach(([f, g, dl]) => {
+      const o = ac.createOscillator(); o.type = 'sine';
+      o.frequency.setValueAtTime(f, t + dl);
+      o.frequency.linearRampToValueAtTime(f * 0.965, t + dl + 1.8);
+      const gn = ac.createGain();
+      gn.gain.setValueAtTime(0.0001, t + dl);
+      gn.gain.linearRampToValueAtTime(g, t + dl + 0.5);
+      gn.gain.exponentialRampToValueAtTime(0.0001, t + dl + 2.0);
+      o.connect(gn); gn.connect(AudioSys.master);
+      o.start(t + dl); o.stop(t + dl + 2.1);
+    });
   }); }
 };
 
@@ -584,7 +630,11 @@ const G = {
   particles: [],
   slashes: [],          // transient slash-arc visuals
   dmgNums: [],          // floating damage numbers
-  ring: null,           // boss shockwave ring {r, speed, width, maxR, dmg, hitDone}
+  fissures: [],         // ember fissures racing out from a ground slam
+  debris: null,         // the discarded maul head, once the haft is broken
+  barLifted: false,     // the gate bar: barred in phase 1, lifted after the break
+  cinematic: false,     // the break: player can't act, can't be hurt
+  lastAggro: -10,       // when the player last read as aggressive
   carve: null,          // the ending: glyphs carved into the practice ring
   victoryChimed: false
 };
@@ -612,61 +662,92 @@ const B = {  // boss
   hp: 1000, hpMax: 1000, hpGhost: 1000,
   face: Math.PI,
   phase2: false,
-  state: 'idle',        // idle | attack | stagger | roar | recoil | carve
+  state: 'idle',        // idle | attack | stagger | break | daze | hesitate | chainPause | recoil | carve
   stateT: 0,
   cd: 1.2,
-  atk: null, phaseIdx: 0, phaseT: 0, phaseDur: 0, hitDone: false,
+  atk: null, atkSet: 1, phaseIdx: 0, phaseT: 0, phaseDur: 0, hitDone: false,
   poise: 0, staggerT: 0,
   strafeDir: 1, strafeT: 0, approachT: 0,
   exposedT: 0,          // five parries in a row: double damage
-  wOff: 0.5, wLen: 70,  // weapon pose (offset from facing, length)
+  broken: false,        // the haft is snapped; phase 2 weapon
+  breakStep: 0,
+  dazeT: 0,             // charged into the wall
+  chainCount: 0, pauseDur: 0.5,
+  hesitated: false, mourned: false, coreDim: 0,
+  guarding: false,
+  wOff: 0.5, wLen: 86,  // weapon pose (offset from facing, length)
   tele: 0,              // telegraph intensity 0..1
   flash: 0,
   dieT: 0
 };
 
-/* ---------- boss attack definitions (unchanged from the current fight) ----------
-   phases: d=duration  k='w'indup|'a'ctive|'r'ecover|'g'ap|'ring'
+/* ---------- phase-1 moveset: THE HAMMER. Momentum he cannot cancel. ----------
+   phases: d=duration  k='w'indup|'a'ctive|'r'ecover|'g'ap
    w:[from,to] weapon angle offset (rel. facing), L:[from,to] weapon length
-   track: rad/s facing correction (windups/gaps only) — then commits.
-   hit: {s:'arc',r0,r1,half}|{s:'c',dist,r}  dmg, move:{sp}  */
-const ATK = {
+   track: rad/s facing correction (windups/gaps only) — then he commits.
+   hit: {s:'arc',r0,r1,half}|{s:'c',dist,r}  */
+const ATK1 = {
   slam: { phases: [
-    { d: 0.78, k: 'w', track: 2.7, w: [0.5, 0.05], L: [70, 26] },
-    { d: 0.12, k: 'a', w: [0.05, 0], L: [26, 104], hit: { s: 'c', dist: 74, r: 55 }, dmg: 38, shake: 10, impact: true },
-    { d: 0.95, k: 'r', w: [0, 0.5], L: [104, 70] }
+    { d: 0.80, k: 'w', track: 2.4, w: [0.5, 0.08], L: [86, 34] },
+    { d: 0.12, k: 'a', w: [0.08, 0], L: [34, 112], hit: { s: 'c', dist: 78, r: 56 }, dmg: 30, shake: 11, impact: true, fissures: true },
+    { d: 1.00, k: 'r', w: [0, 0.5], L: [112, 86] }
+  ] },
+  buried: { phases: [
+    { d: 0.95, k: 'w', track: 2.0, w: [0.55, 0.1], L: [86, 30] },
+    { d: 0.12, k: 'a', w: [0.1, 0], L: [30, 118], hit: { s: 'c', dist: 84, r: 62 }, dmg: 40, shake: 13, impact: true },
+    { d: 1.30, k: 'g', buried: true, w: [0, 0.04], L: [118, 118] },   // wrenching it free — the largest window in the fight
+    { d: 0.35, k: 'r', w: [0.04, 0.5], L: [118, 86] }
+  ] },
+  spin: { phases: [
+    { d: 0.70, k: 'w', track: 2.6, w: [0.5, -2.7], L: [86, 92] },
+    { d: 0.55, k: 'a', w: [-2.7, -2.7 + Math.PI * 2], L: [92, 92], hit: { s: 'arc', r0: 26, r1: 126, half: Math.PI }, dmg: 26, shake: 8 },
+    { d: 0.65, k: 'a', w: [-2.7 + Math.PI * 2, -2.7 + Math.PI * 4], L: [92, 92], hit: { s: 'arc', r0: 26, r1: 126, half: Math.PI }, dmg: 26, shake: 8 },
+    { d: 1.10, k: 'r', wobble: true, w: [-2.7 + Math.PI * 4, 0.5], L: [92, 86] }
+  ] },
+  charge: { phases: [
+    { d: 0.60, k: 'w', track: 3.0, w: [0.5, 0.95], L: [86, 80] },     // tracks during windup ONLY
+    { d: 0.62, k: 'a', charge: 640, w: [0.95, 0.95], L: [80, 80], hit: { s: 'arc', r0: 0, r1: 96, half: 0.7 }, dmg: 36, kb: 2.2, shake: 8 },
+    { d: 0.90, k: 'r', w: [0.95, 0.5], L: [80, 86] }                  // he overran badly
   ] },
   sweep: { phases: [
-    { d: 0.62, k: 'w', track: 2.3, w: [0.5, -2.45], L: [70, 82] },
-    { d: 0.18, k: 'a', w: [-2.45, 2.45], L: [82, 82], hit: { s: 'arc', r0: 18, r1: 138, half: 2.0 }, dmg: 30, shake: 7 },
-    { d: 0.9, k: 'r', w: [2.45, 0.5], L: [82, 70] }
+    { d: 0.66, k: 'w', track: 2.6, w: [0.5, -1.9], L: [86, 74] },
+    { d: 0.15, k: 'a', w: [-1.9, 1.7], L: [74, 74], hit: { s: 'arc', r0: 16, r1: 98, half: 1.7 }, dmg: 24, shake: 6 },
+    { d: 0.90, k: 'r', w: [1.7, 0.5], L: [74, 86] }
+  ] }
+};
+
+/* ---------- phase-2 moveset: THE BROKEN BLADE. Short, fast, honest about
+   its reach. Shares nothing with the hammer. ---------- */
+const ATK2 = {
+  thrust: { phases: [
+    { d: 0.32, k: 'w', track: 3.6, w: [0.35, 0.02], L: [58, 46] },
+    { d: 0.12, k: 'a', w: [0.02, 0], L: [46, 96], hit: { s: 'arc', r0: 0, r1: 96, half: 0.38 }, dmg: 26, shake: 5 },
+    { d: 0.35, k: 'r', w: [0, 0.35], L: [96, 58] }
   ] },
-  lunge: { phases: [
-    { d: 0.52, k: 'w', track: 3.4, w: [0.35, 0.05], L: [70, 88], move: { sp: -70 } },
-    { d: 0.26, k: 'a', w: [0.05, 0], L: [88, 96], hit: { s: 'arc', r0: 0, r1: 118, half: 0.55 }, dmg: 33, move: { sp: 730 }, shake: 6 },
-    { d: 1.0, k: 'r', w: [0, 0.5], L: [96, 70] }
+  step: { phases: [
+    { d: 0.40, k: 'w', track: 3.2, w: [0.35, -1.5], L: [58, 60] },
+    { d: 0.20, k: 'a', move: { sp: 430 }, w: [-1.5, 1.2], L: [60, 88], hit: { s: 'arc', r0: 10, r1: 100, half: 0.9 }, dmg: 28, shake: 6 },
+    { d: 0.50, k: 'r', w: [1.2, 0.35], L: [88, 58] }
   ] },
-  combo: { phases: [
-    { d: 0.52, k: 'w', track: 3.1, w: [0.5, -1.9], L: [70, 78] },
-    { d: 0.14, k: 'a', w: [-1.9, 1.7], L: [78, 78], hit: { s: 'arc', r0: 14, r1: 122, half: 1.5 }, dmg: 25, shake: 5 },
-    { d: 0.28, k: 'g', track: 2.2, w: [1.7, 1.9], L: [78, 78] },
-    { d: 0.36, k: 'w', track: 3.1, w: [1.9, 2.25], L: [78, 80] },
-    { d: 0.14, k: 'a', w: [2.25, -1.7], L: [80, 80], hit: { s: 'arc', r0: 14, r1: 122, half: 1.5 }, dmg: 25, shake: 5 },
-    { d: 0.32, k: 'g', track: 2.4, w: [-1.7, 0.2], L: [80, 60] },
-    { d: 0.46, k: 'w', track: 2.6, w: [0.2, 0.05], L: [60, 26] },
-    { d: 0.12, k: 'a', w: [0.05, 0], L: [26, 100], hit: { s: 'c', dist: 72, r: 52 }, dmg: 34, shake: 9, impact: true },
-    { d: 1.0, k: 'r', w: [0, 0.5], L: [100, 70] }
+  feint: { phases: [
+    { d: 0.32, k: 'w', track: 3.6, w: [0.35, 0.02], L: [58, 46] },    // opens identical to the thrust
+    { d: 0.30, k: 'g', track: 1.2, w: [0.02, 0.5], L: [46, 52] },     // ...and nothing comes
+    { d: 0.12, k: 'a', w: [0.5, -1.6], L: [52, 92], hit: { s: 'arc', r0: 8, r1: 98, half: 0.8 }, dmg: 30, shake: 6 },
+    { d: 0.45, k: 'r', w: [-1.6, 0.35], L: [92, 58] }
   ] },
-  shock: { phases: [
-    { d: 0.66, k: 'w', track: 1.2, w: [0.5, 0.05], L: [70, 22] },
-    { d: 1.18, k: 'ring', w: [0.05, 0.05], L: [22, 22], ring: { speed: 335, width: 34, maxR: 400 }, dmg: 28, shake: 9, impact: true },
-    { d: 0.45, k: 'r', w: [0.05, 0.5], L: [22, 70] }
+  flurry: { phases: [
+    { d: 0.28, k: 'w', track: 3.4, w: [0.35, -1.2], L: [58, 62] },
+    { d: 0.10, k: 'a', w: [-1.2, 1.0], L: [62, 86], hit: { s: 'arc', r0: 8, r1: 90, half: 1.0 }, dmg: 22, shake: 4 },
+    { d: 0.12, k: 'g', track: 2.0, w: [1.0, 1.3], L: [86, 62] },
+    { d: 0.10, k: 'a', w: [1.3, -1.0], L: [62, 86], hit: { s: 'arc', r0: 8, r1: 90, half: 1.0 }, dmg: 22, shake: 4 },
+    { d: 0.12, k: 'g', track: 2.0, w: [-1.0, -1.3], L: [86, 62] },
+    { d: 0.10, k: 'a', w: [-1.3, 1.1], L: [62, 88], hit: { s: 'arc', r0: 8, r1: 90, half: 1.0 }, dmg: 22, shake: 4 },
+    { d: 0.50, k: 'r', w: [1.1, 0.35], L: [88, 58] }
   ] },
-  delayed: { phases: [
-    { d: 1.2, k: 'w', track: 1.5, w: [0.5, -2.6], L: [70, 86], flicker: true, noSpeed: true },
-    { d: 0.17, k: 'g', track: 0, w: [-2.6, -2.6], L: [86, 86], flicker: true, noSpeed: true },
-    { d: 0.13, k: 'a', w: [-2.6, 2.3], L: [86, 86], hit: { s: 'arc', r0: 16, r1: 142, half: 1.9 }, dmg: 38, shake: 8 },
-    { d: 0.95, k: 'r', w: [2.3, 0.5], L: [86, 70] }
+  rising: { phases: [
+    { d: 0.55, k: 'w', track: 2.6, w: [0.35, 1.6], L: [58, 38] },     // drops low — unmistakable
+    { d: 0.14, k: 'a', w: [1.6, -1.3], L: [38, 100], hit: { s: 'arc', r0: 6, r1: 104, half: 0.55 }, dmg: 38, shake: 8 },
+    { d: 0.80, k: 'r', w: [-1.3, 0.35], L: [100, 58] }
   ] }
 };
 
@@ -684,12 +765,16 @@ function resetFight() {
   B.x = ARENA.x + ARENA.w - 170; B.y = ARENA.y + ARENA.h / 2;
   B.hp = B.hpMax; B.hpGhost = B.hpMax; B.face = Math.PI;
   B.phase2 = false; B.state = 'idle'; B.stateT = 0; B.cd = 1.1;
-  B.atk = null; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
-  B.poise = 0; B.staggerT = 0; B.exposedT = 0; B.wOff = 0.5; B.wLen = 70; B.tele = 0; B.flash = 0; B.dieT = 0;
+  B.atk = null; B.atkSet = 1; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
+  B.poise = 0; B.staggerT = 0; B.exposedT = 0; B.wOff = 0.5; B.wLen = 86; B.tele = 0; B.flash = 0; B.dieT = 0;
+  B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0;
+  B.hesitated = false; B.mourned = false; B.coreDim = 0; B.guarding = false;
 
-  G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0; G.ring = null;
+  G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0;
+  G.fissures.length = 0; G.debris = null; G.barLifted = false; G.cinematic = false; G.lastAggro = -10;
   G.carve = null; G.victoryChimed = false;
   G.hitstop = 0; G.shake = 0;
+  AudioSys.duck(0.45, 0.2);
 }
 function goto(screen) { G.screen = screen; G.screenT = 0; }
 
@@ -712,9 +797,61 @@ function addSlash(x, y, ang, r, half, col, dur) {
 }
 
 function playerInvulnerable() {
+  if (G.cinematic) return true;
   if (P.hurtInv > 0) return true;
   if (P.act && P.act.type === 'roll' && P.act.t < P.act.dur * 0.6) return true;
   return false;
+}
+
+/* ---------- ember fissures: race out along the ground from a slam ---------- */
+function spawnFissures(ix, iy) {
+  const base = Math.atan2(P.y - iy, P.x - ix);   // aimed where the player stood at impact
+  const group = { hit: false };
+  for (const off of [-0.55, -0.18, 0.18, 0.55]) {
+    const jit = [];
+    for (let i = 0; i < 12; i++) jit.push((Math.random() - 0.5) * 15);
+    G.fissures.push({ x: ix, y: iy, ang: base + off, len: 0, maxLen: rand(220, 280), speed: 430, t: 0, jit, group });
+  }
+  sfx.fissure();
+}
+function updateFissures(dt) {
+  for (let i = G.fissures.length - 1; i >= 0; i--) {
+    const f = G.fissures[i];
+    f.t += dt;
+    if (f.len < f.maxLen) {
+      f.len = Math.min(f.maxLen, f.len + f.speed * dt);
+      if (!f.group.hit && !P.dead) {
+        const dx = Math.cos(f.ang), dy = Math.sin(f.ang);
+        const px = P.x - f.x, py = P.y - f.y;
+        const along = px * dx + py * dy;
+        if (along > 8 && along < f.len) {
+          const off = Math.abs(px * -dy + py * dx);
+          if (off < 15 + P.r * 0.6) {
+            if (damagePlayer(22, f.x + dx * along, f.y + dy * along, false)) f.group.hit = true;
+            else if (playerInvulnerable()) f.group.hit = true;   // rolled perpendicular — it's past you
+          }
+        }
+      }
+      if (Math.random() < dt * 20) {
+        spawnDrift(f.x + Math.cos(f.ang) * f.len, f.y + Math.sin(f.ang) * f.len,
+          rand(-14, 14), rand(-55, -20), ACCENT, rand(0.3, 0.7), rand(1.5, 3));
+      }
+    }
+    if (f.t > 1.5) G.fissures.splice(i, 1);
+  }
+}
+
+/* ---------- the discarded maul head, lying where it fell ---------- */
+function updateDebris(dt) {
+  const d = G.debris;
+  if (!d || d.settleT <= 0) return;
+  d.settleT -= dt;
+  d.x += d.vx * dt; d.y += d.vy * dt;
+  d.rot += d.vr * dt;
+  d.vx -= d.vx * 3.2 * dt; d.vy -= d.vy * 3.2 * dt; d.vr -= d.vr * 3 * dt;
+  d.x = clamp(d.x, ARENA.x + 20, ARENA.x + ARENA.w - 20);
+  d.y = clamp(d.y, ARENA.y + 20, ARENA.y + ARENA.h - 20);
+  if (d.settleT <= 0) { d.vx = d.vy = d.vr = 0; }
 }
 
 // A successful parry: the strike is turned, Aldric reels, clean streaks expose him.
@@ -751,7 +888,7 @@ function onParrySuccess() {
   }
 }
 
-function damagePlayer(dmg, srcX, srcY, parryable) {
+function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
   if (P.dead) return false;
   // parry — active window near the start of the swing turns any parryable strike
   if (parryable && P.act && P.act.type === 'parry' && P.act.t >= 0.02 && P.act.t <= 0.2) {
@@ -802,7 +939,8 @@ function damagePlayer(dmg, srcX, srcY, parryable) {
   P.hurtInv = 0.45;
   P.parryStreak = 0;                          // a clean hit ends the streak
   const a = Math.atan2(P.y - srcY, P.x - srcX);
-  P.kbX = Math.cos(a) * 260; P.kbY = Math.sin(a) * 260;
+  const kb = 260 * (kbMult || 1);
+  P.kbX = Math.cos(a) * kb; P.kbY = Math.sin(a) * kb;
   const wasFlask = P.act && P.act.type === 'flask';
   P.act = { type: 'hurt', t: 0, dur: 0.35 };
   if (wasFlask) sfx.flaskEmpty(); // the sip is wasted
@@ -836,13 +974,24 @@ function damageBoss(dmg) {
   sfx.hit();
   rumble(70, 0.15, 0.5);
 
-  if (B.poise >= 6 && B.state !== 'stagger' && B.state !== 'roar') {
+  if (B.poise >= 6 && B.state !== 'stagger' && B.state !== 'break' && B.state !== 'daze' && B.state !== 'hesitate') {
     B.state = 'stagger'; B.stateT = 0; B.staggerT = 1.5; B.poise = 0;
     B.atk = null; B.tele = 0;
     sfx.stagger();
     G.shake = Math.max(G.shake, 8);
     spawnParticles(B.x, B.y, 24, ACCENT, 220, 0.6);
   }
+
+  // THE BREAK — at half health he makes a decision
+  if (!B.phase2 && B.state !== 'break' && B.hp <= B.hpMax * 0.5 && B.hp > 0) {
+    B.state = 'break'; B.stateT = 0; B.breakStep = 0;
+    B.atk = null; B.tele = 0;
+    G.cinematic = true;
+    G.fissures.length = 0;
+    AudioSys.duck(0.05, 0.5);   // the room falls near-silent
+    return;
+  }
+
   if (B.hp <= 0) {
     B.hp = 0; B.atk = null; B.tele = 0;
     startCarve();
@@ -882,6 +1031,8 @@ function updatePlayer(dt) {
       ax = s2.x; ay = s2.y;
     }
   }
+
+  if (G.cinematic) return;    // the break holds him still and untouchable
 
   // knockback decay
   P.x += P.kbX * dt; P.y += P.kbY * dt;
@@ -926,6 +1077,7 @@ function updatePlayer(dt) {
       spendStamina(heavy ? 35 : 20);
       if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
       P.act = { type: want, t: 0, dur: heavy ? 0.8 : 0.45, hitDone: false, face: P.face };
+      G.lastAggro = G.time;                  // swinging reads as aggression
       sfx.swing(heavy);
     } else if (want === 'parry' && !P.act && P.st > 0) {
       Input.consumeBuffer();
@@ -958,6 +1110,7 @@ function updatePlayer(dt) {
       const sp = 470 * (1 - k * 0.75);
       P.x += a.dirX * sp * dt; P.y += a.dirY * sp * dt;
       P.trail.push({ x: P.x, y: P.y, rot: Math.atan2(a.dirY, a.dirX), a: 0.9 });
+      if (a.dirX * (B.x - P.x) + a.dirY * (B.y - P.y) > 0) G.lastAggro = G.time;   // rolling in counts
       speedMul = 0;
       if (a.t >= a.dur) P.act = null;
     } else if (a.type === 'light' || a.type === 'heavy') {
@@ -997,6 +1150,11 @@ function updatePlayer(dt) {
     const sp = base * mag * (P.act ? speedMul : 1);
     P.x += mvX * sp * dt; P.y += mvY * sp * dt;
     P.walkT += sp * dt * 0.05;
+    // closing distance reads as aggression
+    if (mag > 0.01) {
+      const ux = B.x - P.x, uy = B.y - P.y, ul = Math.hypot(ux, uy) || 1;
+      if ((mvX * ux + mvY * uy) / ul * sp > 70) G.lastAggro = G.time;
+    }
   }
 
   /* ---- stamina regen: delayed, never while sprinting or mid-action ---- */
@@ -1022,26 +1180,37 @@ function updatePlayer(dt) {
 /* =========================================================================
    BOSS UPDATE
    ========================================================================= */
+function currentSet() { return B.phase2 ? ATK2 : ATK1; }
 function bossStartAttack(name) {
-  B.atk = name; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
+  const set = currentSet();
+  B.atk = name; B.atkSet = B.phase2 ? 2 : 1;
+  B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
+  B.phaseStarted = false; B.impacted = false;
   B.state = 'attack'; B.stateT = 0;
-  B.phaseDur = phaseDuration(ATK[name].phases[0], name);
+  B.phaseDur = set[name].phases[0].d;   // no blanket multipliers — each moveset owns its pacing
 }
-function phaseDuration(ph, name) {
-  let d = ph.d;
-  if (B.phase2 && (ph.k === 'w' || ph.k === 'g') && !ph.noSpeed) d *= 0.76;
-  return d;
-}
-function chooseAttack() {
-  const d = dist(B.x, B.y, P.x, P.y);
-  if (d > 260 && Math.random() < 0.85) return 'lunge';
-  const pool = [['slam', 1.0], ['sweep', 1.1], ['combo', 0.95]];
-  if (B.phase2) { pool.push(['shock', 0.85], ['delayed', 1.0]); }
-  if (d > 180) pool.push(['lunge', 0.9]);
+function pickWeighted(pool) {
   let tot = 0; for (const p of pool) tot += p[1];
   let r = Math.random() * tot;
   for (const p of pool) { r -= p[1]; if (r <= 0) return p[0]; }
-  return 'slam';
+  return pool[0][0];
+}
+function chooseAttack1(d) {
+  if (d > 280 && Math.random() < 0.75) return 'charge';
+  return pickWeighted([
+    ['slam', 1.0], ['buried', 0.7], ['spin', 0.9],
+    ['sweep', d < 150 ? 1.2 : 0.35],
+    ['charge', d > 200 ? 0.5 : 0.05]
+  ]);
+}
+function chooseAttack2(d) {
+  return pickWeighted([
+    ['thrust', 1.0],
+    ['step', d > 130 ? 1.0 : 0.5],
+    ['feint', 0.8],                      // the hard read stays rare — roughly 1 in 5
+    ['flurry', 0.8],
+    ['rising', 0.6]
+  ]);
 }
 
 function updateBoss(dt) {
@@ -1101,22 +1270,87 @@ function updateBoss(dt) {
     return;
   }
 
-  // phase 2 trigger
-  if (!B.phase2 && B.hp <= B.hpMax * 0.5 && B.state !== 'roar') {
-    B.phase2 = true;
-    B.state = 'roar'; B.stateT = 0; B.atk = null; B.tele = 0;
-    sfx.roar();
-    rumble(1000, 1.0, 0.7);
-    G.shake = Math.max(G.shake, 14);
-    spawnParticles(B.x, B.y, 40, ACCENT, 300, 0.9);
+  const angToP = Math.atan2(P.y - B.y, P.x - B.x);
+
+  /* ---- THE BREAK — a decision, not an injury ---- */
+  if (B.state === 'break') {
+    const t = B.stateT;
+    if (t < 0.9) {                       // staggers back, plants the hammer head-down, goes still
+      if (t < 0.4) { B.x -= Math.cos(angToP) * 55 * dt; B.y -= Math.sin(angToP) * 55 * dt; }
+      B.wOff = lerp(B.wOff, 1.45, 5 * dt); B.wLen = lerp(B.wLen, 86, 5 * dt);
+      B.breakStep = 0;
+    } else if (t < 1.55) {               // down on one knee, haft across the thigh
+      B.breakStep = 1;
+      B.wOff = lerp(B.wOff, 0.1, 7 * dt); B.wLen = lerp(B.wLen, 70, 7 * dt);
+    } else {
+      if (B.breakStep < 2) {             // the CRACK
+        B.breakStep = 2;
+        B.broken = true;
+        AudioSys.duck(0.45, 0.05);
+        sfx.crack();
+        G.shake = Math.max(G.shake, 16);
+        rumble(900, 1.0, 1.0);
+        const da = angToP + rand(1.8, 2.6) * (Math.random() < 0.5 ? 1 : -1);
+        G.debris = {
+          x: B.x + Math.cos(B.face) * 20, y: B.y + Math.sin(B.face) * 20,
+          vx: Math.cos(da) * 260, vy: Math.sin(da) * 260,
+          rot: rand(0, Math.PI * 2), vr: rand(-9, 9), settleT: 0.7
+        };
+        spawnParticles(B.x, B.y, 26, '#8a7a62', 240, 0.7);
+        spawnParticles(B.x, B.y, 16, ACCENT, 200, 0.8);
+      }
+      if (t < 2.35) {                    // core flares to maximum; cracks spread
+        B.wOff = lerp(B.wOff, 0.3, 6 * dt); B.wLen = lerp(B.wLen, 34, 6 * dt);
+      } else if (t < 3.05) {             // he rises differently: low, blade forward and level
+        B.breakStep = 3;
+        B.wOff = lerp(B.wOff, 0.12, 6 * dt); B.wLen = lerp(B.wLen, 58, 6 * dt);
+      } else {
+        B.phase2 = true;
+        G.barLifted = true;              // the bar rests against the frame from here on
+        G.cinematic = false;
+        B.state = 'idle'; B.cd = 0.7; B.chainCount = 0;
+      }
+    }
+    B.tele = 0;
     return;
   }
 
-  const angToP = Math.atan2(P.y - B.y, P.x - B.x);
+  if (B.state === 'daze') {              // he hit the wall at a full charge
+    B.dazeT -= dt;
+    B.tele = 0;
+    B.wOff = lerp(B.wOff, 1.4, 4 * dt); B.wLen = lerp(B.wLen, 86, 4 * dt);
+    if (B.dazeT <= 0) { B.state = 'idle'; B.cd = 0.8; }
+    return;
+  }
 
-  if (B.state === 'roar') {
-    B.wOff = lerp(B.wOff, 0.9, 6 * dt); B.wLen = lerp(B.wLen, 55, 6 * dt);
-    if (B.stateT >= 1.6) { B.state = 'idle'; B.cd = 0.35; }
+  /* ---- THE HESITATION — exactly once; nothing speeds up afterward ---- */
+  if (B.state === 'hesitate') {
+    const t = B.stateT;
+    if (t < 0.5) {
+      const k = t / 0.5;
+      B.wOff = lerp(0.35, 0.05, k); B.wLen = lerp(58, 34, k);
+      B.tele = k * 0.85;
+      B.face = turnToward(B.face, angToP, 1.6 * dt);
+    } else if (t < 1.15) {               // held at the top — and nothing comes
+      B.tele = 0;
+      B.coreDim = Math.min(1, B.coreDim + 4 * dt);
+      if (!B.mourned) { B.mourned = true; sfx.mourn(); }
+    } else if (t < 2.45) {               // the blade comes down, unswung
+      const k = (t - 1.15) / 1.3;
+      B.wOff = lerp(0.05, 1.35, k); B.wLen = lerp(34, 58, k);
+      B.coreDim = 1;
+    } else {
+      B.hesitated = true;
+      B.state = 'idle'; B.cd = 0.7;
+    }
+    return;
+  }
+
+  if (B.state === 'chainPause') {        // the beat between chained cuts — a real window
+    B.tele = 0;
+    B.wOff = lerp(B.wOff, 1.1, 6 * dt); B.wLen = lerp(B.wLen, 52, 6 * dt);
+    B.face = turnToward(B.face, angToP, 1.0 * dt);
+    if (B.stateT >= B.pauseDur) { B.chainCount++; bossStartAttack(chooseAttack2(dist(B.x, B.y, P.x, P.y))); }
     return;
   }
 
@@ -1142,25 +1376,50 @@ function updateBoss(dt) {
 
   if (B.state === 'idle') {
     B.tele = Math.max(0, B.tele - 4 * dt);
-    B.wOff = lerp(B.wOff, 0.5, 4 * dt); B.wLen = lerp(B.wLen, 70, 4 * dt);
-    B.face = turnToward(B.face, angToP, 3.2 * dt);
     const d = dist(B.x, B.y, P.x, P.y);
-    // reposition
-    if (d > 155) {
-      const sp = d > 300 ? 165 : 108;
-      B.x += Math.cos(angToP) * sp * dt; B.y += Math.sin(angToP) * sp * dt;
+
+    if (!B.phase2) {
+      /* REACTIVE STANCE — phase 1 only. No aggression, no fight. */
+      const passive = G.time - G.lastAggro > 1.4;
+      B.guarding = passive;
+      B.wOff = lerp(B.wOff, passive ? 1.05 : 0.5, 4 * dt);
+      B.wLen = lerp(B.wLen, 86, 4 * dt);
+      B.face = turnToward(B.face, angToP, 3.0 * dt);
+      if (d > (passive ? 250 : 165)) {
+        const sp = d > 300 ? 150 : 100;
+        B.x += Math.cos(angToP) * sp * dt; B.y += Math.sin(angToP) * sp * dt;
+      } else {
+        B.strafeT -= dt;
+        if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.8, 1.8); }
+        const sa = angToP + Math.PI / 2 * B.strafeDir;
+        B.x += Math.cos(sa) * (passive ? 68 : 52) * dt; B.y += Math.sin(sa) * (passive ? 68 : 52) * dt;
+      }
+      B.cd -= dt * (passive ? 0.15 : 1);
+      if (B.cd <= 0) {
+        if (passive && Math.random() < 0.6) B.cd = rand(0.9, 1.6);   // he shifts his guard and keeps waiting
+        else { B.chainCount = 1; bossStartAttack(chooseAttack1(d)); }
+      }
     } else {
-      B.strafeT -= dt;
-      if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.8, 1.8); }
-      const sa = angToP + Math.PI / 2 * B.strafeDir;
-      B.x += Math.cos(sa) * 55 * dt; B.y += Math.sin(sa) * 55 * dt;
-    }
-    B.cd -= dt;
-    if (B.cd <= 0) {
-      bossStartAttack(chooseAttack());
+      B.guarding = false;
+      B.wOff = lerp(B.wOff, 0.35, 5 * dt);   // low stance, blade forward and level
+      B.wLen = lerp(B.wLen, 58, 5 * dt);
+      B.face = turnToward(B.face, angToP, 4.2 * dt);
+      if (d > 140) {
+        B.x += Math.cos(angToP) * 150 * dt; B.y += Math.sin(angToP) * 150 * dt;
+      } else {
+        B.strafeT -= dt;
+        if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.6, 1.4); }
+        const sa = angToP + Math.PI / 2 * B.strafeDir;
+        B.x += Math.cos(sa) * 80 * dt; B.y += Math.sin(sa) * 80 * dt;
+      }
+      B.cd -= dt;
+      if (B.cd <= 0) {
+        if (!B.hesitated && P.hp <= 35) { B.state = 'hesitate'; B.stateT = 0; B.mourned = false; }
+        else { B.chainCount = 1; bossStartAttack(chooseAttack2(d)); }
+      }
     }
   } else if (B.state === 'attack' && B.atk) {
-    const atk = ATK[B.atk];
+    const atk = (B.atkSet === 2 ? ATK2 : ATK1)[B.atk];
     const ph = atk.phases[B.phaseIdx];
     const pdur = B.phaseDur;
     B.phaseT += dt;
@@ -1170,21 +1429,14 @@ function updateBoss(dt) {
     B.wOff = lerp(ph.w[0], ph.w[1], k);
     B.wLen = lerp(ph.L[0], ph.L[1], k);
 
-    // telegraph intensity: ramps during windups, flickers on the delayed swing
-    if (ph.k === 'w') {
-      B.tele = ph.flicker ? (0.45 + 0.55 * Math.abs(Math.sin(G.time * 11))) * (0.35 + 0.65 * k) : k;
-    } else if (ph.k === 'g' && ph.flicker) {
-      B.tele = 0.9;
-    } else if (ph.k === 'a' || ph.k === 'ring') {
-      B.tele = Math.max(0, B.tele - 8 * dt);
-    } else {
-      B.tele = Math.max(0, B.tele - 6 * dt);
-    }
+    // telegraph intensity: ramps during windups only
+    if (ph.k === 'w') B.tele = k;
+    else if (ph.k === 'a') B.tele = Math.max(0, B.tele - 8 * dt);
+    else B.tele = Math.max(0, B.tele - 6 * dt);
 
     // tracking during windups/gaps only — active phases are committed
     if ((ph.k === 'w' || ph.k === 'g') && ph.track) {
-      const tr = ph.track * (B.phase2 ? 1.15 : 1);
-      B.face = turnToward(B.face, angToP, tr * dt);
+      B.face = turnToward(B.face, angToP, ph.track * dt);
     }
 
     // movement within a phase
@@ -1193,20 +1445,36 @@ function updateBoss(dt) {
       B.y += Math.sin(B.face) * ph.move.sp * dt;
     }
 
-    // entering active: swing sound, spawn ring
-    if ((ph.k === 'a' || ph.k === 'ring') && !B.phaseStarted) {
+    // CHARGING RUSH: committed, and the wall punishes him for it
+    if (ph.charge) {
+      B.x += Math.cos(B.face) * ph.charge * dt;
+      B.y += Math.sin(B.face) * ph.charge * dt;
+      if (Math.random() < dt * 30) {
+        spawnDrift(B.x - Math.cos(B.face) * 30 + rand(-12, 12), B.y - Math.sin(B.face) * 30 + rand(-12, 12),
+          -Math.cos(B.face) * 60, -Math.sin(B.face) * 60, 'rgba(150,146,138,0.5)', 0.4, 2);
+      }
+      const hitWall = B.x <= ARENA.x + B.r || B.x >= ARENA.x + ARENA.w - B.r ||
+                      B.y <= ARENA.y + B.r || B.y >= ARENA.y + ARENA.h - B.r;
+      if (hitWall) {
+        B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
+        B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
+        B.atk = null;
+        B.state = 'daze'; B.stateT = 0; B.dazeT = 1.4;
+        sfx.daze();
+        G.shake = Math.max(G.shake, 13);
+        rumble(400, 0.8, 0.5);
+        spawnParticles(B.x + Math.cos(B.face) * B.r, B.y + Math.sin(B.face) * B.r, 22, '#8a8478', 230, 0.7);
+        return;
+      }
+    }
+
+    // entering active: the swing sound + arc
+    if (ph.k === 'a' && !B.phaseStarted) {
       B.phaseStarted = true; B.hitDone = false;
-      if (ph.k === 'ring') {
-        G.ring = { x: B.x, y: B.y, r: B.r + 6, speed: ph.ring.speed, width: ph.ring.width, maxR: ph.ring.maxR, dmg: ph.dmg, hitDone: false };
-        sfx.slamImpact();
-        G.shake = Math.max(G.shake, ph.shake || 6);
-        spawnParticles(B.x, B.y, 22, ACCENT, 240, 0.6);
-        rumble(180, 0.6, 0.3);
-      } else {
-        sfx.bossSwing();
-        if (ph.hit && ph.hit.s === 'arc') {
-          addSlash(B.x, B.y, B.face + (ph.w[0] + ph.w[1]) / 2, ph.hit.r1, ph.hit.half, ACCENT, 0.18);
-        }
+      if (B.atkSet === 1) { if (ph.charge) sfx.chargeWhoosh(); else sfx.maulSwing(); }
+      else sfx.shardSwing();
+      if (ph.hit && ph.hit.s === 'arc' && !ph.charge) {
+        addSlash(B.x, B.y, B.face + (ph.w[0] + ph.w[1]) / 2, ph.hit.r1, Math.min(ph.hit.half, 2.2), ACCENT, 0.18);
       }
     }
 
@@ -1224,16 +1492,21 @@ function updateBoss(dt) {
         if (dist(cx, cy, P.x, P.y) < ph.hit.r + P.r) hit = true;
       }
       if (hit) {
-        B.hitDone = damagePlayer(ph.dmg, B.x, B.y, true) || B.hitDone;
+        const connected = damagePlayer(ph.dmg, B.x, B.y, true, ph.kb || 1);
+        B.hitDone = connected || B.hitDone;
         if (B.state !== 'attack') { B.phaseStarted = false; return; } // a parry knocked him out of the swing
+        if (connected && ph.charge) B.phaseT = pdur;                  // the rush stops on a body
       }
       // ground impact feedback once, at start of active
       if (ph.impact && !B.impacted) {
         B.impacted = true;
-        sfx.slamImpact();
+        sfx.maulImpact();
         G.shake = Math.max(G.shake, ph.shake || 8);
+        rumble(260, 0.7, 0.35);
         const cx = B.x + Math.cos(B.face) * (ph.hit.dist || 70), cy = B.y + Math.sin(B.face) * (ph.hit.dist || 70);
         spawnParticles(cx, cy, 18, '#8a7f6a', 200, 0.55);
+        addSlash(cx, cy, 0, 40, Math.PI, ACCENT, 0.22);
+        if (ph.fissures) spawnFissures(cx, cy);
       }
     }
 
@@ -1242,10 +1515,17 @@ function updateBoss(dt) {
       B.phaseIdx++;
       B.phaseT = 0; B.phaseStarted = false; B.impacted = false;
       if (B.phaseIdx >= atk.phases.length) {
-        B.atk = null; B.state = 'idle'; B.stateT = 0;
-        B.cd = B.phase2 ? rand(0.35, 0.85) : rand(0.65, 1.3);
+        B.atk = null;
+        // phase 2 chains into short strings, each link separated by a readable beat
+        if (B.phase2 && B.chainCount < 3 && Math.random() < 0.55) {
+          B.state = 'chainPause'; B.stateT = 0; B.pauseDur = rand(0.40, 0.60);
+        } else {
+          B.chainCount = 0;
+          B.state = 'idle'; B.stateT = 0;
+          B.cd = B.phase2 ? rand(0.35, 0.80) : rand(0.9, 1.6);
+        }
       } else {
-        B.phaseDur = phaseDuration(atk.phases[B.phaseIdx], B.atk);
+        B.phaseDur = atk.phases[B.phaseIdx].d;
       }
     }
   }
@@ -1253,21 +1533,6 @@ function updateBoss(dt) {
   // clamp boss to arena
   B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
   B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
-}
-
-/* ---------- shockwave ring ---------- */
-function updateRing(dt) {
-  const r = G.ring;
-  if (!r) return;
-  r.r += r.speed * dt;
-  if (!r.hitDone) {
-    const d = dist(r.x, r.y, P.x, P.y);
-    if (Math.abs(d - r.r) < r.width / 2 + P.r * 0.6) {
-      if (damagePlayer(r.dmg, r.x, r.y, false)) r.hitDone = true;
-      else if (playerInvulnerable()) r.hitDone = true; // rolled through it — it's past you now
-    }
-  }
-  if (r.r > r.maxR) G.ring = null;
 }
 
 /* =========================================================================
@@ -1321,7 +1586,8 @@ function update(dt) {
     case 'fight':
       updatePlayer(dt);
       updateBoss(dt);
-      updateRing(dt);
+      updateFissures(dt);
+      updateDebris(dt);
       break;
     case 'dead':
       // world freezes behind the overlay; boss finishes its swing cosmetically
@@ -1394,6 +1660,27 @@ function drawFloor() {
     if (Math.random() < 0.08) spawnDrift(c[0] + rand(-4, 4), c[1] - 10, rand(-6, 6), rand(-40, -22), ACCENT, rand(0.6, 1.2), rand(1.2, 2.2));
   }
 
+  // the gate bar, once he has lifted it: resting against the frame. Never remarked on.
+  if (G.barLifted) {
+    ctx.save();
+    // paint over the baked-in barred version
+    ctx.fillStyle = '#131015';
+    ctx.fillRect(GATE.x - 62, 30, 124, 16);
+    const og2 = ctx.createLinearGradient(0, 30, 0, 46);
+    og2.addColorStop(0, '#171310'); og2.addColorStop(1, '#0e0c0c');
+    ctx.fillStyle = og2;
+    ctx.fillRect(GATE.x - 62, 30, 124, 16);
+    ctx.translate(GATE.x + 52, 34);
+    ctx.rotate(-1.22);
+    ctx.fillStyle = '#1b1c24';
+    ctx.fillRect(-70, -6, 140, 12);
+    ctx.strokeStyle = '#0a0b10'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(-70, -6, 140, 12);
+    ctx.fillStyle = '#3c3f4d';
+    for (let i = -2; i <= 2; i++) { ctx.beginPath(); ctx.arc(i * 28, 0, 1.8, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+  }
+
   // the dying ember light inside the gate's opening
   const gf = 0.7 + 0.3 * Math.sin(G.time * 1.3);
   ctx.globalAlpha = 0.14 * gf;
@@ -1439,18 +1726,57 @@ function drawFogWall() {
   ctx.restore();
 }
 
-function drawRing() {
-  const r = G.ring;
-  if (!r) return;
-  const fade = clamp(1 - r.r / r.maxR, 0, 1) * 0.85 + 0.15;
+function drawFissures() {
+  for (const f of G.fissures) {
+    const fade = f.len < f.maxLen ? 1 : clamp(1 - (f.t - f.maxLen / f.speed) / 0.9, 0, 1);
+    const dx = Math.cos(f.ang), dy = Math.sin(f.ang);
+    const nx = -dy, ny = dx;
+    const segs = Math.max(2, Math.floor(f.len / 24));
+    ctx.strokeStyle = `rgba(10,8,6,${0.8 * fade})`;
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(f.x, f.y);
+    for (let i = 1; i <= segs; i++) {
+      const along = (i / segs) * f.len;
+      const off = f.jit[i % f.jit.length] * (i === segs ? 0.4 : 1);
+      ctx.lineTo(f.x + dx * along + nx * off, f.y + dy * along + ny * off);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(255,158,44,${0.75 * fade})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    if (f.len < f.maxLen) {
+      const tx = f.x + dx * f.len, ty = f.y + dy * f.len;
+      ctx.globalAlpha = 0.6;
+      ctx.drawImage(GLOW_EMBER, tx - 14, ty - 14, 28, 28);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+function drawDebris() {
+  const d = G.debris;
+  if (!d) return;
   ctx.save();
-  ctx.strokeStyle = ACCENT;
-  ctx.globalAlpha = 0.85 * fade;
-  ctx.lineWidth = r.width * 0.55;
-  ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2); ctx.stroke();
-  ctx.globalAlpha = 0.35 * fade;
-  ctx.lineWidth = r.width * 1.3;
-  ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2); ctx.stroke();
+  ctx.translate(d.x, d.y);
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath(); ctx.ellipse(0, 4, 22, 8, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.rotate(d.rot);
+  const g = ctx.createLinearGradient(0, -16, 0, 16);
+  g.addColorStop(0, '#3a3d49'); g.addColorStop(1, '#20222b');
+  ctx.fillStyle = g;
+  ctx.fillRect(-11, -17, 22, 34);
+  ctx.strokeStyle = '#0a0b10';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(-11, -17, 22, 34);
+  ctx.fillStyle = '#767e90';
+  ctx.fillRect(7, -17, 4, 34);           // the striking edge, still bright
+  ctx.fillStyle = '#14161d';
+  ctx.beginPath(); ctx.arc(-4, 0, 3, 0, Math.PI * 2); ctx.fill();  // the socket, empty
+  ctx.strokeStyle = '#4a3b2c';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-4, 0); ctx.lineTo(-14, 5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-4, 0); ctx.lineTo(-12, -4); ctx.stroke();
   ctx.restore();
 }
 
@@ -1734,8 +2060,11 @@ function drawBoss() {
 
   ctx.rotate(B.face);
   const stag = B.state === 'stagger';
-  if (stag) ctx.rotate(0.35 * Math.sin(G.time * 3));
-  const kneeling = carving && G.carve && G.carve.phase !== 'walk';
+  const dazed = B.state === 'daze';
+  if (stag || dazed) ctx.rotate(0.32 * Math.sin(G.time * 3));
+  if (B.state === 'hesitate' && B.stateT > 0.5 && B.stateT < 1.15) ctx.rotate(Math.sin(G.time * 40) * 0.012);
+  const kneeling = (carving && G.carve && G.carve.phase !== 'walk') ||
+                   (B.state === 'break' && B.breakStep >= 1 && B.breakStep < 3);
   if (kneeling) { ctx.scale(1, 0.86); ctx.translate(3, 0); }
 
   const tele = B.tele;
@@ -1789,10 +2118,26 @@ function drawBoss() {
 
   // ---- portcullis-bar ribs across the torso, with an ember core glowing through ----
   if (!white) {
-    let core = B.phase2 ? 1 : 0.5;
-    ctx.globalAlpha = alpha * core;
-    ctx.drawImage(GLOW_EMBER, -12, -14, 24, 28);
+    let core = B.broken ? 1.0 : 0.5;
+    core *= (1 - 0.85 * B.coreDim);        // it gutters out when he falters
+    if (stag) core = 1.3;                  // stance broken: exposed and flaring
+    const cr = stag ? 40 : 26;
+    ctx.globalAlpha = alpha * clamp(core, 0, 1);
+    ctx.drawImage(GLOW_EMBER, -2 - cr / 2, -cr / 2, cr, cr);
     ctx.globalAlpha = alpha;
+    // cracks spread wider once the haft is broken
+    ctx.strokeStyle = `rgba(255,158,44,${0.4 * clamp(core, 0, 1)})`;
+    ctx.lineWidth = B.broken ? 2 : 1.2;
+    const cracks = B.broken
+      ? [[-2, -4, -13, -16], [-2, 4, -15, 15], [2, -2, 13, -12], [-4, 0, -20, 3], [2, 4, 12, 16], [0, -5, 4, -20]]
+      : [[-2, -4, -11, -13], [-2, 4, -12, 12], [1, 0, 11, -6]];
+    for (const c2 of cracks) {
+      ctx.beginPath();
+      ctx.moveTo(c2[0], c2[1]);
+      ctx.lineTo((c2[0] + c2[2]) / 2 + 2, (c2[1] + c2[3]) / 2 - 1);
+      ctx.lineTo(c2[2], c2[3]);
+      ctx.stroke();
+    }
   }
   ctx.strokeStyle = white ? '#ffffff' : '#14111c';
   ctx.lineWidth = 3.5;
@@ -1880,7 +2225,8 @@ function drawBoss() {
     ctx.beginPath(); ctx.moveTo(18, 0); ctx.lineTo(-6, 0); ctx.stroke();
   }
   if (!white) {
-    const eg = B.phase2 ? 1 : 0.62;
+    let eg = B.broken ? 1 : 0.62;
+    eg *= (1 - 0.8 * B.coreDim);
     const flick = eg * (0.85 + 0.15 * Math.sin(G.time * 13));
     ctx.globalAlpha = alpha * 0.6 * flick;
     ctx.drawImage(GLOW_EMBER, -6, -16, 32, 32);
@@ -1891,47 +2237,64 @@ function drawBoss() {
   }
   ctx.restore();
 
-  // ---- the blade he was given ----
+  // ---- the weapon: a two-handed maul, until he breaks it ----
   ctx.save();
   ctx.rotate(B.wOff);
-  const L = B.wLen, hilt = 16;
-  ctx.fillStyle = white ? '#ffffff' : '#3a2c22';
-  ctx.fillRect(hilt - 16, -3, 16, 6);
-  ctx.fillStyle = white ? '#ffffff' : mix('#8d7385', ACCENT, pulse);
-  ctx.beginPath(); ctx.moveTo(hilt - 2, -13); ctx.lineTo(hilt + 5, -4); ctx.lineTo(hilt + 5, 4); ctx.lineTo(hilt - 2, 13);
-  ctx.lineTo(hilt - 6, 9); ctx.lineTo(hilt - 6, -9); ctx.closePath(); ctx.fill();
-  const blg = ctx.createLinearGradient(0, -8, 0, 8);
-  blg.addColorStop(0, '#b9c2d4'); blg.addColorStop(0.45, '#7e8798'); blg.addColorStop(1, '#464e5e');
-  ctx.fillStyle = white ? '#ffffff' : (pulse > 0.02 ? mix('#7e8798', ACCENT, pulse) : blg);
-  ctx.beginPath();
-  ctx.moveTo(hilt + 4, -7.5);
-  ctx.lineTo(hilt + L * 0.62, -8.5);
-  ctx.lineTo(hilt + L * 0.9, -5);
-  ctx.lineTo(hilt + L, 0);
-  ctx.lineTo(hilt + L * 0.9, 5);
-  ctx.lineTo(hilt + L * 0.62, 8.5);
-  ctx.lineTo(hilt + 4, 7.5);
-  ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = white ? '#ffffff' : '#14111c';
-  ctx.lineWidth = 1.5; ctx.stroke();
-  if (!white) {
-    ctx.strokeStyle = mix('#14111c', ACCENT, pulse * 0.7);
+  const L = B.wLen;
+  if (!B.broken) {
+    // thick haft
+    ctx.strokeStyle = white ? '#ffffff' : '#4a3b2c';
+    ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(10 + L, 0); ctx.stroke();
+    ctx.strokeStyle = white ? '#ffffff' : '#31271d';
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(hilt + 8, 0); ctx.lineTo(hilt + L * 0.85, 0); ctx.stroke();
-  }
-  if (tele > 0.05) {
+    ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(10 + L, 0); ctx.stroke();
+    // rectangular slab head
     ctx.save();
-    ctx.globalAlpha = alpha * tele;
-    ctx.strokeStyle = ACCENT;
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(hilt + 4, -7.5); ctx.lineTo(hilt + L * 0.62, -8.5);
-    ctx.lineTo(hilt + L * 0.9, -5); ctx.lineTo(hilt + L, 0);
-    ctx.stroke();
-    ctx.globalAlpha = alpha * tele * 0.6;
-    const gx = hilt + L * 0.8;
-    ctx.drawImage(GLOW_EMBER, gx - 34, -34, 68, 68);
+    ctx.translate(10 + L, 0);
+    const hg2 = ctx.createLinearGradient(0, -18, 0, 18);
+    hg2.addColorStop(0, '#40434f'); hg2.addColorStop(1, '#23252e');
+    ctx.fillStyle = white ? '#ffffff' : hg2;
+    ctx.fillRect(-10, -18, 22, 36);
+    ctx.strokeStyle = white ? '#ffffff' : '#0a0b10';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-10, -18, 22, 36);
+    ctx.fillStyle = white ? '#ffffff' : mix('#8f97ab', ACCENT, pulse);
+    ctx.fillRect(8, -18, 4.5, 36);       // the bright striking edge
+    ctx.fillStyle = white ? '#ffffff' : '#171921';
+    ctx.beginPath(); ctx.arc(-4, -9, 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-4, 9, 1.6, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+    if (tele > 0.05) {
+      ctx.globalAlpha = alpha * tele * 0.7;
+      ctx.drawImage(GLOW_EMBER, 10 + L - 34, -34, 68, 68);
+      ctx.globalAlpha = alpha;
+    }
+  } else {
+    // what's left: a splintered haft ending in a long jagged shard
+    const hend = 10 + L * 0.45;
+    ctx.strokeStyle = white ? '#ffffff' : '#4a3b2c';
+    ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(hend, 0); ctx.stroke();
+    ctx.strokeStyle = white ? '#ffffff' : '#6b5638';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(hend - 2, -2); ctx.lineTo(hend + 7, -6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(hend - 1, 2); ctx.lineTo(hend + 5, 6); ctx.stroke();
+    ctx.fillStyle = white ? '#ffffff' : mix('#8b8272', ACCENT, pulse * 0.9);
+    ctx.beginPath();
+    ctx.moveTo(hend, -4);
+    ctx.lineTo(hend + L * 0.3, -5);
+    ctx.lineTo(10 + L, 0);
+    ctx.lineTo(hend + L * 0.34, 4.5);
+    ctx.lineTo(hend, 3.5);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = white ? '#ffffff' : '#14110c';
+    ctx.lineWidth = 1.3; ctx.stroke();
+    if (tele > 0.05) {
+      ctx.globalAlpha = alpha * tele * 0.8;
+      ctx.drawImage(GLOW_EMBER, 10 + L - 24, -24, 48, 48);
+      ctx.globalAlpha = alpha;
+    }
   }
   ctx.restore();
 
@@ -1978,20 +2341,27 @@ function drawBoss() {
     ctx.restore();
   }
 
-  // roar shockwave (cosmetic) + heat bloom
-  if (B.state === 'roar') {
-    const k = B.stateT / 1.6;
+  // the break: a burst of light at the moment the haft gives
+  if (B.state === 'break' && B.breakStep >= 2) {
+    const k = clamp((B.stateT - 1.55) / 0.8, 0, 1);
     ctx.save();
-    for (let i = 0; i < 3; i++) {
-      const kk = clamp(k - i * 0.12, 0, 1);
-      if (kk <= 0) continue;
-      ctx.globalAlpha = (1 - kk) * 0.45;
-      ctx.strokeStyle = ACCENT;
-      ctx.lineWidth = 4 - i;
-      ctx.beginPath(); ctx.arc(B.x, B.y, 40 + kk * 280, 0, Math.PI * 2); ctx.stroke();
-    }
-    ctx.globalAlpha = (1 - k) * 0.35;
+    ctx.globalAlpha = (1 - k) * 0.5;
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = 5 - 3 * k;
+    ctx.beginPath(); ctx.arc(B.x, B.y, 30 + k * 250, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = (1 - k) * 0.4;
     ctx.drawImage(GLOW_EMBER, B.x - 120, B.y - 120, 240, 240);
+    ctx.restore();
+  }
+  // dazed after running into the wall
+  if (dazed) {
+    ctx.save();
+    ctx.fillStyle = '#e6e9f0';
+    for (let i = 0; i < 3; i++) {
+      const a = G.time * 4 + i * 2.1;
+      ctx.globalAlpha = alpha * 0.85;
+      ctx.beginPath(); ctx.arc(B.x + Math.cos(a) * 22, B.y + Math.sin(a) * 9 - B.r - 14, 2.4, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.restore();
   }
 
@@ -2347,7 +2717,8 @@ function drawVictory() {
 
 function drawWorld() {
   drawFloor();
-  drawRing();
+  drawDebris();
+  drawFissures();
   drawCarving();
   drawSlashes();
   // draw whichever is further "back" first, so overlap reads correctly
@@ -2410,7 +2781,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, resetFight, damagePlayer, damageBoss, onParrySuccess, bossStartAttack, ATK };
+window.__game = { G, P, B, Input, resetFight, damagePlayer, damageBoss, onParrySuccess, bossStartAttack, ATK1, ATK2, startCarve };
 </script>
 </body>
 </html>
