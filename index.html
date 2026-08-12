@@ -60,7 +60,7 @@ function mulberry32(a) {
    AUDIO — all synthesized, created lazily, resumed on any user gesture.
    ========================================================================= */
 const AudioSys = {
-  ac: null, master: null, noiseBuf: null,
+  ac: null, master: null, noiseBuf: null, ambient: null,
   ensure() {
     try {
       if (!this.ac) {
@@ -76,8 +76,56 @@ const AudioSys = {
         for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
       }
       if (this.ac.state === 'suspended') this.ac.resume().catch(() => {});
+      if (this.ac.state === 'running') this.startAmbient();
       return this.ac;
     } catch (e) { return null; }
+  },
+  // A bed under the whole fight: a low drone, and wind moving through the gate.
+  // Built once, runs forever, ducked with everything else.
+  startAmbient() {
+    try {
+      if (this.ambient || !this.ac) return;
+      const ac = this.ac, t = ac.currentTime;
+      const bus = ac.createGain();
+      bus.gain.value = 0.0001;
+      bus.gain.linearRampToValueAtTime(1, t + 3.5);   // fades up as you arrive
+      bus.connect(this.master);
+
+      // the drone: two detuned voices, barely moving
+      const dg = ac.createGain(); dg.gain.value = 0.055;
+      const dlp = ac.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 220;
+      dg.connect(dlp); dlp.connect(bus);
+      [43.65, 65.41, 87.31].forEach((f, i) => {
+        const o = ac.createOscillator();
+        o.type = i === 2 ? 'triangle' : 'sine';
+        o.frequency.value = f * (1 + (i - 1) * 0.0015);
+        const vg = ac.createGain(); vg.gain.value = i === 2 ? 0.35 : 1;
+        o.connect(vg); vg.connect(dg);
+        o.start(t);
+        // a slow swell so it breathes instead of humming
+        const lfo = ac.createOscillator(); lfo.type = 'sine';
+        lfo.frequency.value = 0.03 + i * 0.017;
+        const la = ac.createGain(); la.gain.value = 0.35;
+        lfo.connect(la); la.connect(vg.gain);
+        lfo.start(t);
+      });
+
+      // wind through the gate: filtered noise, the band drifting slowly
+      const w = ac.createBufferSource(); w.buffer = this.noiseBuf; w.loop = true;
+      const wbp = ac.createBiquadFilter(); wbp.type = 'bandpass';
+      wbp.frequency.value = 380; wbp.Q.value = 0.7;
+      const wg = ac.createGain(); wg.gain.value = 0.035;
+      w.connect(wbp); wbp.connect(wg); wg.connect(bus);
+      w.start(t);
+      const wl = ac.createOscillator(); wl.type = 'sine'; wl.frequency.value = 0.045;
+      const wla = ac.createGain(); wla.gain.value = 220;
+      wl.connect(wla); wla.connect(wbp.frequency); wl.start(t);
+      const wl2 = ac.createOscillator(); wl2.type = 'sine'; wl2.frequency.value = 0.07;
+      const wla2 = ac.createGain(); wla2.gain.value = 0.018;
+      wl2.connect(wla2); wla2.connect(wg.gain); wl2.start(t);
+
+      this.ambient = bus;
+    } catch (e) {}
   },
   ready() { return this.ac && this.ac.state === 'running'; },
   duck(level, secs) {
@@ -165,6 +213,11 @@ const sfx = {
     _tone(ac, 'sawtooth', 220 + Math.random() * 120, 140, 0.2, 0.05, t);
   }); },
   chargeFull() { this._run((ac, t) => { _tone(ac, 'sine', 660, 720, 0.14, 0.16, t); _tone(ac, 'sine', 990, 1020, 0.18, 0.1, t + 0.04); }); },
+  read() { this._run((ac, t) => {          // a sharp intake — he has seen it
+    _tone(ac, 'square', 1150, 1500, 0.07, 0.16, t);
+    _noise(ac, 0.16, 'highpass', 2200, 3600, 0.22, t);
+    _tone(ac, 'sawtooth', 150, 210, 0.14, 0.14, t);
+  }); },
   stab() { this._run((ac, t) => {
     _tone(ac, 'sine', 190, 60, 0.2, 0.7, t);
     _noise(ac, 0.12, 'bandpass', 1800, 500, 0.5, t);
@@ -719,6 +772,9 @@ const G = {
   barLifted: false,     // the gate bar: barred in phase 1, lifted after the break
   cinematic: false,     // the break: player can't act, can't be hurt
   lastAggro: -10,       // when the player last read as aggressive
+  cam: { x: W / 2, y: H / 2, zoom: 1.04 },   // slight overscan leaves room to drift
+  slowmo: 0,            // the killing blow dilates time
+  deaths: 0,            // attempts lost this session — the gate is not merciless
   carve: null,          // the ending: glyphs carved into the practice ring
   victoryChimed: false
 };
@@ -757,6 +813,7 @@ const B = {  // boss
   breakStep: 0,
   dazeT: 0,             // charged into the wall
   chainCount: 0, pauseDur: 0.5,
+  readCd: 0,            // gate on how often he can read a charged heavy
   hesitated: false, mourned: false, coreDim: 0,
   guarding: false,
   wOff: 0.5, wLen: 86,  // weapon pose (offset from facing, length)
@@ -832,6 +889,12 @@ const ATK2 = {
     { d: 0.55, k: 'w', track: 2.6, w: [0.35, 1.6], L: [58, 38] },     // drops low — unmistakable
     { d: 0.14, k: 'a', w: [1.6, -1.3], L: [38, 114], hit: { s: 'arc', r0: 6, r1: 118, half: 0.55 }, dmg: 38, shake: 8 },
     { d: 0.80, k: 'r', w: [-1.3, 0.35], L: [114, 58] }
+  ] },
+  // never in the random pool — only thrown when he reads a charging heavy
+  punish: { phases: [
+    { d: 0.20, k: 'w', track: 4.2, w: [-0.4, 0.02], L: [62, 46] },
+    { d: 0.13, k: 'a', move: { sp: 330 }, w: [0.02, 0], L: [46, 110], hit: { s: 'arc', r0: 0, r1: 114, half: 0.5 }, dmg: 30, shake: 7 },
+    { d: 0.60, k: 'r', w: [0, 0.35], L: [110, 58] }
   ] }
 };
 
@@ -843,6 +906,7 @@ function resetFight() {
   P.hp = P.hpMax; P.hpGhost = P.hpMax; P.st = P.stMax; P.stDelay = 0; P.stFlash = 0;
   P.walkT = 0; P.trail.length = 0; P.speedNow = 0; P.blocking = false; P.parryStreak = 0;
   P.scarf = []; for (let i = 0; i < 6; i++) P.scarf.push({ x: P.x, y: P.y });
+  P.flaskMax = flaskAllowance();
   P.flasks = P.flaskMax; P.face = 0; P.moveDirX = 1; P.moveDirY = 0;
   P.locked = false; P.act = null; P.hurtInv = 0; P.kbX = P.kbY = 0; P.flash = 0; P.dead = false;
 
@@ -851,14 +915,41 @@ function resetFight() {
   B.phase2 = false; B.state = 'idle'; B.stateT = 0; B.cd = 1.1;
   B.atk = null; B.atkSet = 1; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
   B.poise = 0; B.staggerT = 0; B.exposedT = 0; B.wOff = 0.5; B.wLen = 86; B.tele = 0; B.flash = 0; B.dieT = 0;
-  B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0;
+  B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0; B.readCd = 0;
   B.hesitated = false; B.mourned = false; B.coreDim = 0; B.guarding = false;
 
   G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0;
   G.fissures.length = 0; G.debris = null; G.barLifted = false; G.cinematic = false; G.lastAggro = -10;
   G.carve = null; G.victoryChimed = false;
-  G.hitstop = 0; G.shake = 0;
+  G.hitstop = 0; G.shake = 0; G.slowmo = 0;
+  G.cam.x = W / 2; G.cam.y = H / 2; G.cam.zoom = 1.04;
   AudioSys.duck(0.45, 0.2);
+}
+
+/* The gate is not merciless: each few failed attempts leaves one more
+   draught in the flask belt. Never mentioned, only visible in the HUD. */
+function flaskAllowance() { return 3 + Math.min(2, Math.floor(G.deaths / 3)); }
+
+/* ---------- camera: a slow drift toward the action, pushed in for the beats ---------- */
+function updateCamera(dt) {
+  let tx = W / 2, ty = H / 2, tz = 1.04;
+  if (G.screen === 'fight' || G.screen === 'refade' || G.screen === 'dead' || G.screen === 'victory') {
+    // drift toward the midpoint of the duel, clamped to the overscan slack
+    const mx = (P.x + B.x) / 2, my = (P.y + B.y) / 2;
+    tx = W / 2 + clamp((mx - W / 2) * 0.28, -16, 16);
+    ty = H / 2 + clamp((my - H / 2) * 0.28, -9, 9);
+    if (B.state === 'break') { tz = 1.20; tx = lerp(tx, B.x, 0.35); ty = lerp(ty, B.y, 0.35); }
+    else if (G.slowmo > 0) { tz = 1.34; tx = lerp(tx, B.x, 0.5); ty = lerp(ty, B.y, 0.5); }
+    else if (B.state === 'carve') { tz = 1.13; tx = lerp(tx, B.x, 0.3); ty = lerp(ty, B.y, 0.3); }
+  }
+  const sp = (G.slowmo > 0 || B.state === 'break') ? 3.4 : 1.6;
+  G.cam.x = lerp(G.cam.x, tx, Math.min(1, sp * dt));
+  G.cam.y = lerp(G.cam.y, ty, Math.min(1, sp * dt));
+  G.cam.zoom = lerp(G.cam.zoom, tz, Math.min(1, sp * dt));
+  // never let the drift reveal past the world edges
+  const halfW = W / (2 * G.cam.zoom), halfH = H / (2 * G.cam.zoom);
+  G.cam.x = clamp(G.cam.x, halfW, W - halfW);
+  G.cam.y = clamp(G.cam.y, halfH, H - halfH);
 }
 function goto(screen) { G.screen = screen; G.screenT = 0; }
 
@@ -1040,6 +1131,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
 
 function killPlayer() {
   P.act = null;
+  G.deaths++;
   sfx.bell();
   rumble(500, 0.8, 0.8);
   goto('dead');
@@ -1079,6 +1171,13 @@ function damageBoss(dmg) {
 
   if (B.hp <= 0) {
     B.hp = 0; B.atk = null; B.tele = 0;
+    // the killing blow: time dilates, the room holds its breath
+    G.slowmo = 0.55;
+    G.hitstop = Math.max(G.hitstop, 0.14);
+    G.shake = Math.max(G.shake, 12);
+    rumble(420, 0.9, 0.7);
+    AudioSys.duck(0.16, 0.25);
+    spawnParticles(B.x, B.y, 34, '#ffe9a8', 260, 0.9);
     startCarve();
   }
 }
@@ -1400,6 +1499,7 @@ function updateBoss(dt) {
   B.hpGhost = Math.max(B.hp, B.hpGhost - B.hpMax * 0.35 * dt);
   B.poise = Math.max(0, B.poise - 0.85 * dt);
   B.exposedT = Math.max(0, B.exposedT - dt);
+  B.readCd = Math.max(0, B.readCd - dt);
   B.stateT += dt;
 
   // phase-2 embers drift off him
@@ -1533,6 +1633,19 @@ function updateBoss(dt) {
     return;
   }
 
+  /* ---- THE READ — he sees the charge coming ---- */
+  if (B.state === 'read') {
+    B.tele = 0.55 + 0.45 * Math.sin(G.time * 34);   // a sharp, unmistakable flicker
+    B.face = turnToward(B.face, angToP, 6 * dt);
+    B.wOff = lerp(B.wOff, -0.4, 11 * dt); B.wLen = lerp(B.wLen, 62, 11 * dt);
+    // he closes the last of the gap as he commits, so the charge is never safe
+    if (dist(B.x, B.y, P.x, P.y) > 120) {
+      B.x += Math.cos(angToP) * 190 * dt; B.y += Math.sin(angToP) * 190 * dt;
+    }
+    if (B.stateT >= 0.22) { B.chainCount = 1; bossStartAttack('punish'); }
+    return;
+  }
+
   if (B.state === 'chainPause') {        // the beat between chained cuts — a real window
     B.tele = 0;
     B.wOff = lerp(B.wOff, 1.1, 6 * dt); B.wLen = lerp(B.wLen, 52, 6 * dt);
@@ -1573,7 +1686,7 @@ function updateBoss(dt) {
       B.wLen = lerp(B.wLen, 86, 4 * dt);
       B.face = turnToward(B.face, angToP, 3.0 * dt);
       if (d > (passive ? 250 : 165)) {
-        const sp = d > 300 ? 150 : 100;
+        const sp = d > 300 ? 162 : 112;
         B.x += Math.cos(angToP) * sp * dt; B.y += Math.sin(angToP) * sp * dt;
       } else {
         B.strafeT -= dt;
@@ -1598,6 +1711,14 @@ function updateBoss(dt) {
         if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.6, 1.4); }
         const sa = angToP + Math.PI / 2 * B.strafeDir;
         B.x += Math.cos(sa) * 80 * dt; B.y += Math.sin(sa) * 80 * dt;
+      }
+      // he reads a heavy being wound up and refuses to stand there for it
+      const charging = P.act && P.act.type === 'heavy' && P.act.charging && P.act.chargeT > 0.35;
+      if (charging && B.readCd <= 0 && !P.dead) {
+        B.state = 'read'; B.stateT = 0; B.readCd = 5.0;
+        B.atk = null;
+        sfx.read();
+        return;
       }
       B.cd -= dt;
       if (B.cd <= 0) {
@@ -1709,7 +1830,7 @@ function updateBoss(dt) {
         } else {
           B.chainCount = 0;
           B.state = 'idle'; B.stateT = 0;
-          B.cd = B.phase2 ? rand(0.25, 0.65) : rand(0.9, 1.6);
+          B.cd = B.phase2 ? rand(0.25, 0.65) : rand(0.8, 1.35);
         }
       } else {
         B.phaseDur = atk.phases[B.phaseIdx].d;
@@ -2580,6 +2701,26 @@ function drawBoss() {
   }
   ctx.restore();
 
+  // THE READ — his eyes flare and a chevron snaps shut over him: he has seen the charge
+  if (B.state === 'read') {
+    const k = clamp(B.stateT / 0.22, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = alpha * (0.5 + 0.5 * Math.sin(G.time * 34));
+    ctx.drawImage(GLOW_EMBER, B.x - 30, B.y - 30, 60, 60);
+    ctx.globalAlpha = alpha * (1 - k * 0.4);
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = 3;
+    const rr2 = 62 - k * 26;                 // a bracket closing in on him
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(B.x + s * rr2, B.y - 20);
+      ctx.lineTo(B.x + s * (rr2 - 9), B.y);
+      ctx.lineTo(B.x + s * rr2, B.y + 20);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   // reeling from a parry — a gold glint marks the opening for the riposte
   if (B.state === 'recoil') {
     const pu = 0.6 + 0.4 * Math.sin(G.time * 11);
@@ -2806,6 +2947,7 @@ function drawControls(y) {
     ['Sprint', 'B  (hold)', 'Space (hold)'],
     ['Light attack', 'RB', 'Left Mouse'],
     ['Heavy attack', 'RT', 'Right Mouse'],
+    ['Charge it', 'RT  (hold)', 'RMB (hold)'],
     ['Block (hold)', 'L1', 'Shift'],
     ['Parry', 'L2', 'F'],
     ['Lock-on', 'R3', 'Q'],
@@ -2873,10 +3015,6 @@ function drawTitle() {
   ctx.font = 'italic 16px Georgia, serif';
   ctx.fillStyle = 'rgba(214,207,194,0.72)';
   ctx.fillText('a boss duel', W / 2, 136);
-
-  ctx.fillStyle = ACCENT;
-  ctx.font = '14px Georgia, serif';
-  ctx.fillText('beyond the fog waits  ' + BOSS_NAME + ',  ' + BOSS_TITLE.toLowerCase(), W / 2, 168);
 
   drawControls(206);
 
@@ -2985,6 +3123,12 @@ function drawVictory() {
 }
 
 function drawWorld() {
+  // the camera lives here; the HUD is drawn afterwards in screen space
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.scale(G.cam.zoom, G.cam.zoom);
+  ctx.translate(-G.cam.x, -G.cam.y);
+
   drawFloor();
   drawDebris();
   drawFissures();
@@ -3000,6 +3144,14 @@ function drawWorld() {
   v.addColorStop(1, 'rgba(0,0,0,0.42)');
   ctx.fillStyle = v;
   ctx.fillRect(0, 0, W, H);
+
+  ctx.restore();
+
+  // the world slows and desaturates on the killing blow
+  if (G.slowmo > 0) {
+    ctx.fillStyle = `rgba(10,8,14,${0.22 * clamp(G.slowmo / 0.55, 0, 1)})`;
+    ctx.fillRect(0, 0, W, H);
+  }
   drawHUD();
 }
 
@@ -3041,10 +3193,19 @@ function frame(now) {
 
   if (G.hitstop > 0) {           // hitstop: freeze the world, keep rendering
     G.hitstop -= rdt;
+    updateCamera(rdt);
     render();
     return;
   }
-  update(rdt);
+  // the killing blow dilates time — the camera and the fade keep real time
+  let dt = rdt;
+  if (G.slowmo > 0) {
+    G.slowmo = Math.max(0, G.slowmo - rdt);
+    dt = rdt * 0.22;
+    if (G.slowmo <= 0) AudioSys.duck(0.45, 0.5);
+  }
+  update(dt);
+  updateCamera(rdt);
   render();
 }
 requestAnimationFrame(frame);
