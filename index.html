@@ -165,6 +165,11 @@ const sfx = {
     _tone(ac, 'sawtooth', 220 + Math.random() * 120, 140, 0.2, 0.05, t);
   }); },
   chargeFull() { this._run((ac, t) => { _tone(ac, 'sine', 660, 720, 0.14, 0.16, t); _tone(ac, 'sine', 990, 1020, 0.18, 0.1, t + 0.04); }); },
+  read() { this._run((ac, t) => {          // a sharp intake — he has seen it
+    _tone(ac, 'square', 1150, 1500, 0.07, 0.16, t);
+    _noise(ac, 0.16, 'highpass', 2200, 3600, 0.22, t);
+    _tone(ac, 'sawtooth', 150, 210, 0.14, 0.14, t);
+  }); },
   stab() { this._run((ac, t) => {
     _tone(ac, 'sine', 190, 60, 0.2, 0.7, t);
     _noise(ac, 0.12, 'bandpass', 1800, 500, 0.5, t);
@@ -757,6 +762,7 @@ const B = {  // boss
   breakStep: 0,
   dazeT: 0,             // charged into the wall
   chainCount: 0, pauseDur: 0.5,
+  readCd: 0,            // gate on how often he can read a charged heavy
   hesitated: false, mourned: false, coreDim: 0,
   guarding: false,
   wOff: 0.5, wLen: 86,  // weapon pose (offset from facing, length)
@@ -832,6 +838,12 @@ const ATK2 = {
     { d: 0.55, k: 'w', track: 2.6, w: [0.35, 1.6], L: [58, 38] },     // drops low — unmistakable
     { d: 0.14, k: 'a', w: [1.6, -1.3], L: [38, 114], hit: { s: 'arc', r0: 6, r1: 118, half: 0.55 }, dmg: 38, shake: 8 },
     { d: 0.80, k: 'r', w: [-1.3, 0.35], L: [114, 58] }
+  ] },
+  // never in the random pool — only thrown when he reads a charging heavy
+  punish: { phases: [
+    { d: 0.20, k: 'w', track: 4.2, w: [-0.4, 0.02], L: [62, 46] },
+    { d: 0.13, k: 'a', move: { sp: 330 }, w: [0.02, 0], L: [46, 110], hit: { s: 'arc', r0: 0, r1: 114, half: 0.5 }, dmg: 30, shake: 7 },
+    { d: 0.60, k: 'r', w: [0, 0.35], L: [110, 58] }
   ] }
 };
 
@@ -851,7 +863,7 @@ function resetFight() {
   B.phase2 = false; B.state = 'idle'; B.stateT = 0; B.cd = 1.1;
   B.atk = null; B.atkSet = 1; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
   B.poise = 0; B.staggerT = 0; B.exposedT = 0; B.wOff = 0.5; B.wLen = 86; B.tele = 0; B.flash = 0; B.dieT = 0;
-  B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0;
+  B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0; B.readCd = 0;
   B.hesitated = false; B.mourned = false; B.coreDim = 0; B.guarding = false;
 
   G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0;
@@ -1400,6 +1412,7 @@ function updateBoss(dt) {
   B.hpGhost = Math.max(B.hp, B.hpGhost - B.hpMax * 0.35 * dt);
   B.poise = Math.max(0, B.poise - 0.85 * dt);
   B.exposedT = Math.max(0, B.exposedT - dt);
+  B.readCd = Math.max(0, B.readCd - dt);
   B.stateT += dt;
 
   // phase-2 embers drift off him
@@ -1533,6 +1546,19 @@ function updateBoss(dt) {
     return;
   }
 
+  /* ---- THE READ — he sees the charge coming ---- */
+  if (B.state === 'read') {
+    B.tele = 0.55 + 0.45 * Math.sin(G.time * 34);   // a sharp, unmistakable flicker
+    B.face = turnToward(B.face, angToP, 6 * dt);
+    B.wOff = lerp(B.wOff, -0.4, 11 * dt); B.wLen = lerp(B.wLen, 62, 11 * dt);
+    // he closes the last of the gap as he commits, so the charge is never safe
+    if (dist(B.x, B.y, P.x, P.y) > 120) {
+      B.x += Math.cos(angToP) * 190 * dt; B.y += Math.sin(angToP) * 190 * dt;
+    }
+    if (B.stateT >= 0.22) { B.chainCount = 1; bossStartAttack('punish'); }
+    return;
+  }
+
   if (B.state === 'chainPause') {        // the beat between chained cuts — a real window
     B.tele = 0;
     B.wOff = lerp(B.wOff, 1.1, 6 * dt); B.wLen = lerp(B.wLen, 52, 6 * dt);
@@ -1598,6 +1624,14 @@ function updateBoss(dt) {
         if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.6, 1.4); }
         const sa = angToP + Math.PI / 2 * B.strafeDir;
         B.x += Math.cos(sa) * 80 * dt; B.y += Math.sin(sa) * 80 * dt;
+      }
+      // he reads a heavy being wound up and refuses to stand there for it
+      const charging = P.act && P.act.type === 'heavy' && P.act.charging && P.act.chargeT > 0.35;
+      if (charging && B.readCd <= 0 && !P.dead) {
+        B.state = 'read'; B.stateT = 0; B.readCd = 5.0;
+        B.atk = null;
+        sfx.read();
+        return;
       }
       B.cd -= dt;
       if (B.cd <= 0) {
@@ -2579,6 +2613,26 @@ function drawBoss() {
     ctx.globalAlpha = alpha;
   }
   ctx.restore();
+
+  // THE READ — his eyes flare and a chevron snaps shut over him: he has seen the charge
+  if (B.state === 'read') {
+    const k = clamp(B.stateT / 0.22, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = alpha * (0.5 + 0.5 * Math.sin(G.time * 34));
+    ctx.drawImage(GLOW_EMBER, B.x - 30, B.y - 30, 60, 60);
+    ctx.globalAlpha = alpha * (1 - k * 0.4);
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = 3;
+    const rr2 = 62 - k * 26;                 // a bracket closing in on him
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(B.x + s * rr2, B.y - 20);
+      ctx.lineTo(B.x + s * (rr2 - 9), B.y);
+      ctx.lineTo(B.x + s * rr2, B.y + 20);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 
   // reeling from a parry — a gold glint marks the opening for the riposte
   if (B.state === 'recoil') {
