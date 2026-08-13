@@ -287,7 +287,7 @@ const Input = {
   prevPadB: [], prevRT: false,
   kbEdges: {},                  // one-frame edges from key/mouse events
   // unified per-frame edges:
-  light: false, heavy: false, lock: false, flask: false, confirm: false, parry: false,
+  light: false, heavy: false, lock: false, flask: false, confirm: false, parry: false, pause: false,
   moveX: 0, moveY: 0, moveMag: 0,
   sprint: false, blockHeld: false, heavyHeld: false, mouseRDown: false,
   dodgeWasDown: false, dodgeHoldT: 0, dodgeSprinted: false,
@@ -301,7 +301,7 @@ const Input = {
   consumeBuffer() { const a = this.peekBuffer(); this.buffer = null; return a; },
 
   poll(rdt) {
-    this.light = this.heavy = this.lock = this.flask = this.confirm = this.parry = false;
+    this.light = this.heavy = this.lock = this.flask = this.confirm = this.parry = this.pause = false;
 
     /* ---- gamepad (polled; buttons are not event-driven) ---- */
     let gp = null;
@@ -341,6 +341,7 @@ const Input = {
       if (edge(11)) this.lock = true;                        // R3
       if (edge(2)) this.flask = true;                        // X / Square
       if (edge(0) || edge(9)) this.confirm = true;           // A or Start
+      if (edge(9)) this.pause = true;                        // Start also pauses the fight
       if (edge(6)) this.parry = true;                        // L2 / LT (analog-safe)
       padBlock = bd(4);                                      // L1 / LB — hold to guard
       padDodgeDown = bd(1);                                  // B / Circle
@@ -366,6 +367,7 @@ const Input = {
     if (this.kbEdges.flask) this.flask = true;
     if (this.kbEdges.confirm) this.confirm = true;
     if (this.kbEdges.parry) this.parry = true;
+    if (this.kbEdges.pause) this.pause = true;
     const kbDodgeDown = !!this.keys['Space'];
     const kbBlock = !!(this.keys['ShiftLeft'] || this.keys['ShiftRight']);
     this.kbEdges = {};
@@ -404,6 +406,7 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyE') Input.kbEdges.flask = true;
   if (e.code === 'KeyF') Input.kbEdges.parry = true;
   if (e.code === 'Enter') Input.kbEdges.confirm = true;
+  if (e.code === 'Escape' || e.code === 'KeyP') Input.kbEdges.pause = true;
 });
 window.addEventListener('keyup', e => { Input.keys[e.code] = false; });
 canvas.addEventListener('mousedown', e => {
@@ -414,7 +417,17 @@ canvas.addEventListener('mousedown', e => {
 });
 window.addEventListener('mouseup', e => { if (e.button === 2) Input.mouseRDown = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
-window.addEventListener('gamepadconnected', () => { Input.device = 'pad'; AudioSys.ensure(); });
+window.addEventListener('gamepadconnected', () => {
+  Input.device = 'pad'; AudioSys.ensure();
+  G.padLost = 0;
+});
+// a controller dropping mid-fight should never cost a run — hold everything
+window.addEventListener('gamepaddisconnected', () => {
+  if (Input.device === 'pad') {
+    G.padLost = 1;
+    if (G.screen === 'fight') G.paused = true;
+  }
+});
 
 /* =========================================================================
    PRE-RENDERED ART — glow sprites, fog sprite, and the arena's still-life
@@ -775,6 +788,8 @@ const G = {
   cam: { x: W / 2, y: H / 2, zoom: 1.04 },   // slight overscan leaves room to drift
   slowmo: 0,            // the killing blow dilates time
   deaths: 0,            // attempts lost this session — the gate is not merciless
+  paused: false,
+  padLost: 0,           // a controller vanished mid-fight; hold until it returns
   carve: null,          // the ending: glyphs carved into the practice ring
   victoryChimed: false
 };
@@ -921,7 +936,7 @@ function resetFight() {
   G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0;
   G.fissures.length = 0; G.debris = null; G.barLifted = false; G.cinematic = false; G.lastAggro = -10;
   G.carve = null; G.victoryChimed = false;
-  G.hitstop = 0; G.shake = 0; G.slowmo = 0;
+  G.hitstop = 0; G.shake = 0; G.slowmo = 0; G.paused = false;
   G.cam.x = W / 2; G.cam.y = H / 2; G.cam.zoom = 1.04;
   AudioSys.duck(0.45, 0.2);
 }
@@ -2952,6 +2967,7 @@ function drawControls(y) {
     ['Parry', 'L2', 'F'],
     ['Lock-on', 'R3', 'Q'],
     ['Flask', 'X', 'E'],
+    ['Pause', 'Start', 'Esc'],
     ['Confirm', 'A / Start', 'Enter']
   ];
   const colL = W / 2 - 130, colPad = W / 2, colKb = W / 2 + 160;
@@ -3172,10 +3188,60 @@ function render() {
       ctx.fillRect(0, 0, W, H);
       break;
     }
-    case 'fight': drawWorld(); break;
+    case 'fight': drawWorld(); if (G.paused) drawPause(); break;
     case 'dead': drawDead(); break;
     case 'victory': drawVictory(); break;
   }
+  drawAudioNotice();
+}
+
+// A demo must never be silently silent: browsers refuse to start audio
+// until a key, click or tap — a gamepad press does not count.
+function drawAudioNotice() {
+  if (AudioSys.ready()) return;
+  if (G.screen === 'title') {
+    const bl = 0.6 + 0.4 * Math.sin(G.time * 3.4);
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.globalAlpha = bl;
+    ctx.fillStyle = '#e8c15a';
+    ctx.font = '600 14px Georgia, serif';
+    ctx.fillText('press a key or click once to wake the sound', W / 2, 520);
+    ctx.restore();
+  } else {
+    ctx.save();
+    ctx.globalAlpha = 0.75;
+    ctx.translate(W - 34, 30);
+    ctx.fillStyle = '#cfc8ba';
+    ctx.beginPath();
+    ctx.moveTo(-8, -3); ctx.lineTo(-4, -3); ctx.lineTo(0, -8);
+    ctx.lineTo(0, 8); ctx.lineTo(-4, 3); ctx.lineTo(-8, 3);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#c0503a';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(4, -6); ctx.lineTo(12, 6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(12, -6); ctx.lineTo(4, 6); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawPause() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(4,5,8,0.72)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  const lost = G.padLost && !Input.pad;
+  ctx.fillStyle = '#e6e0d0';
+  ctx.font = '600 34px Georgia, "Times New Roman", serif';
+  drawTracked(lost ? 'CONTROLLER LOST' : 'PAUSED', W / 2, H / 2 - 6, 9);
+  ctx.font = '15px Georgia, serif';
+  ctx.globalAlpha = 0.55 + 0.45 * Math.sin(G.time * 3);
+  ctx.fillStyle = '#cfc8ba';
+  ctx.fillText(lost ? 'reconnect it to continue'
+    : (Input.device === 'pad' ? 'START to resume' : 'ESC to resume'), W / 2, H / 2 + 30);
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+  ctx.restore();
 }
 
 /* =========================================================================
@@ -3191,6 +3257,13 @@ function frame(now) {
 
   Input.poll(rdt);
 
+  // pause — only in the fight, and a lost controller pauses on your behalf
+  if (G.screen === 'fight' && Input.pause) {
+    if (!(G.paused && G.padLost && !Input.pad)) G.paused = !G.paused;
+  }
+  if (G.padLost && Input.pad) G.padLost = 0;
+  if (G.screen !== 'fight') G.paused = false;
+  if (G.paused) { G.time += rdt; render(); return; }   // time advances so the overlay animates
   if (G.hitstop > 0) {           // hitstop: freeze the world, keep rendering
     G.hitstop -= rdt;
     updateCamera(rdt);
