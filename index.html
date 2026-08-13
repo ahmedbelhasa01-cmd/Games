@@ -218,6 +218,11 @@ const sfx = {
     _noise(ac, 0.16, 'highpass', 2200, 3600, 0.22, t);
     _tone(ac, 'sawtooth', 150, 210, 0.14, 0.14, t);
   }); },
+  bodyFall() { this._run((ac, t) => {     // armour meeting stone
+    _tone(ac, 'sine', 90, 38, 0.28, 0.6, t);
+    _noise(ac, 0.2, 'lowpass', 700, 120, 0.45, t);
+    _noise(ac, 0.09, 'bandpass', 1900, 900, 0.16, t + 0.01);
+  }); },
   stab() { this._run((ac, t) => {
     _tone(ac, 'sine', 190, 60, 0.2, 0.7, t);
     _noise(ac, 0.12, 'bandpass', 1800, 500, 0.5, t);
@@ -807,11 +812,10 @@ const P = {  // Nomad
   hurtInv: 0,           // post-hit grace
   kbX: 0, kbY: 0,       // knockback velocity
   flash: 0,
-  dead: false, deathX: 0, deathY: 0
+  dead: false, deathX: 0, deathY: 0, deathFace: 0, fellDone: false
 };
 
 const BOSS_NAME = 'ALDRIC';
-const BOSS_TITLE = 'Who Was Given the Blade';
 const B = {  // boss
   x: 0, y: 0, r: 34,
   hp: 1200, hpMax: 1200, hpGhost: 1200,
@@ -923,7 +927,8 @@ function resetFight() {
   P.scarf = []; for (let i = 0; i < 6; i++) P.scarf.push({ x: P.x, y: P.y });
   P.flaskMax = flaskAllowance();
   P.flasks = P.flaskMax; P.face = 0; P.moveDirX = 1; P.moveDirY = 0;
-  P.locked = false; P.act = null; P.hurtInv = 0; P.kbX = P.kbY = 0; P.flash = 0; P.dead = false;
+  P.locked = false; P.act = null; P.hurtInv = 0; P.kbX = P.kbY = 0; P.flash = 0;
+  P.dead = false; P.fellDone = false; P.deathFace = 0;
 
   B.x = ARENA.x + ARENA.w - 170; B.y = ARENA.y + ARENA.h / 2;
   B.hp = B.hpMax; B.hpGhost = B.hpMax; B.face = Math.PI;
@@ -1103,7 +1108,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
         G.shake = Math.max(G.shake, 4);
         sfx.block();
         rumble(90, 0.3, 0.5);
-        if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; killPlayer(); }
+        if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; P.deathFace = P.face; killPlayer(); }
         return true;
       }
       // not enough stamina behind the shield-arm — GUARD BREAK
@@ -1121,7 +1126,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
       spawnParticles(P.x, P.y, 16, '#c33b3b', 200, 0.5);
       sfx.guardBreak();
       rumble(320, 1.0, 0.6);
-      if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; killPlayer(); }
+      if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; P.deathFace = P.face; killPlayer(); }
       return true;
     }
   }
@@ -1140,7 +1145,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
   spawnParticles(P.x, P.y, 14, '#c33b3b', 190, 0.5);
   sfx.playerHit();
   rumble(220, 0.95, 0.5);
-  if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; killPlayer(); }
+  if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; P.deathFace = P.face; killPlayer(); }
   return true;
 }
 
@@ -1912,14 +1917,27 @@ function update(dt) {
       updateFissures(dt);
       updateDebris(dt);
       break;
-    case 'dead':
+    case 'dead': {
       // world freezes behind the overlay; boss finishes its swing cosmetically
       B.tele = Math.max(0, B.tele - dt);
+      // he hits the stone
+      if (!P.fellDone && G.screenT >= 0.52) {
+        P.fellDone = true;
+        sfx.bodyFall();
+        G.shake = Math.max(G.shake, 5);
+        spawnParticles(P.deathX, P.deathY + 4, 16, 'rgba(150,146,138,0.55)', 95, 0.75);
+      }
+      // and then goes to ash
+      if (G.screenT > 1.05 && G.screenT < 2.9 && Math.random() < dt * 30) {
+        spawnDrift(P.deathX + rand(-15, 15), P.deathY + rand(-7, 9),
+          rand(-12, 12), rand(-46, -18), 'rgba(196,204,224,0.5)', rand(0.5, 1.2), rand(1.2, 2.4));
+      }
       if (G.screenT > 2.1 && Input.confirm) {
         resetFight();
         goto('refade');
       }
       break;
+    }
     case 'victory':
       if (!G.victoryChimed && G.screenT > 0.4) { G.victoryChimed = true; sfx.chime(); }
       if (G.screenT > 2.3 && Input.confirm) {
@@ -2175,26 +2193,104 @@ function drawSword(len, white) { drawSwordProfile(ctx, len, { white }); }
 
 function drawPlayer() {
   if (P.dead) {
-    // crumple + a soul-wisp drifting up and away
-    const t = G.screenT;
-    if (t < 4) {
+    /* He goes down in stages: the legs give, he pitches onto the stone,
+       and then he simply goes to ash. His sword falls point-first and
+       stays standing — the arena is already full of them. */
+    const t = G.screenT, fx = P.deathX, fy = P.deathY, ff = P.deathFace || 0;
+
+    // the ground shadow flattens and spreads as he falls
+    const spread = clamp(t / 0.95, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = clamp(1 - (t - 1.1) / 1.7, 0, 1) * 0.45;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(fx, fy + 6, 14 + spread * 10, 6 + spread * 2, ff, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // the sword, dropped and driven point-first into the floor
+    if (t > 0.4) {
+      const k = clamp((t - 0.4) / 0.32, 0, 1);
+      const settle = 1 - Math.pow(1 - k, 3);
       ctx.save();
-      ctx.translate(P.deathX, P.deathY);
-      ctx.globalAlpha = clamp(1 - t / 4, 0.2, 1);
-      ctx.rotate(1.35);
-      ctx.fillStyle = '#8d97ad';
-      ctx.beginPath(); ctx.ellipse(0, 0, 15, 7, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#aab5cc';
-      ctx.beginPath(); ctx.moveTo(15, 0); ctx.lineTo(4, -5); ctx.lineTo(4, 5); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = clamp(1 - (t - 3.2) / 1.0, 0, 1);
+      ctx.translate(fx + Math.cos(ff + 1.1) * 20, fy + Math.sin(ff + 1.1) * 20 + 2);
+      ctx.rotate(Math.PI / 2 + (1 - settle) * 1.4);
+      drawSwordProfile(ctx, 30, {});
       ctx.restore();
     }
-    const wt = clamp(t - 0.5, 0, 3.2);
+
+    // the body
+    const bodyA = clamp(1 - (t - 1.15) / 1.5, 0, 1);
+    if (bodyA > 0) {
+      let sink, flat, lean;
+      if (t < 0.45) {                       // the legs give out
+        const k = t / 0.45;
+        sink = k * 3; flat = k * 0.28; lean = k * 0.22;
+      } else if (t < 0.95) {                // pitches forward onto the stone
+        const k = (t - 0.45) / 0.5;
+        const e = k * k;                    // gathers speed as he goes
+        sink = 3 + e * 4; flat = 0.28 + e * 0.6; lean = 0.22 + e * 0.5;
+      } else {
+        sink = 7; flat = 0.88; lean = 0.72;
+      }
+      ctx.save();
+      ctx.globalAlpha = bodyA;
+      ctx.translate(fx, fy + sink);
+      ctx.rotate(ff + lean * 0.25);
+      ctx.scale(1 - flat * 0.18, 1 - flat * 0.62);   // compresses toward the floor
+
+      // cloak, pooling out behind him
+      ctx.fillStyle = '#2d3a63';
+      ctx.beginPath();
+      ctx.moveTo(-2, -9);
+      ctx.quadraticCurveTo(-16, -10 - flat * 5, -25 - flat * 8, -4);
+      ctx.lineTo(-25 - flat * 8, 5);
+      ctx.quadraticCurveTo(-16, 10 + flat * 5, -2, 9);
+      ctx.closePath(); ctx.fill();
+
+      // torso
+      const bg = ctx.createRadialGradient(-3, -3, 2, 0, 0, 13);
+      bg.addColorStop(0, '#c9d2e2'); bg.addColorStop(0.6, '#98a3ba'); bg.addColorStop(1, '#5f6981');
+      ctx.fillStyle = bg;
+      ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#2b3140'; ctx.lineWidth = 1.5; ctx.stroke();
+
+      // pauldrons
+      ctx.fillStyle = '#8894ab';
+      ctx.beginPath(); ctx.arc(-1, -10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(-1, 10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+      // helm, tipping forward until it rests on the ground
+      ctx.save();
+      ctx.rotate(lean * 0.5);
+      const hg = ctx.createLinearGradient(2, 0, 16, 0);
+      hg.addColorStop(0, '#98a3ba'); hg.addColorStop(1, '#d7deeb');
+      ctx.fillStyle = hg;
+      ctx.beginPath(); ctx.moveTo(19, 0); ctx.lineTo(2, -8.5); ctx.lineTo(6, 0); ctx.lineTo(2, 8.5); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#232938'; ctx.lineWidth = 1.2; ctx.stroke();
+      // the light behind the visor goes out as he falls
+      const eye = clamp(1 - t / 0.9, 0, 1);
+      if (eye > 0.02) {
+        ctx.globalAlpha = bodyA * eye * 0.7;
+        ctx.drawImage(GLOW_BLUE, 3, -7, 14, 14);
+        ctx.globalAlpha = bodyA;
+        ctx.strokeStyle = `rgba(159,199,255,${eye})`;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath(); ctx.moveTo(10, -3.6); ctx.lineTo(14, 0); ctx.lineTo(10, 3.6); ctx.stroke();
+      }
+      ctx.restore();
+      ctx.restore();
+    }
+
+    // and what is left of him leaves
+    const wt = clamp(t - 1.25, 0, 3.2);
     if (wt > 0 && wt < 3.2) {
-      const wy = P.deathY - 14 - wt * 24;
-      const wa = clamp(1 - wt / 3.2, 0, 0.85);
-      const wx = P.deathX + Math.sin(t * 2.2) * 8;
+      const wy = fy - 10 - wt * 26;
+      const wa = clamp(1 - wt / 3.2, 0, 0.85) * clamp(wt / 0.4, 0, 1);
+      const wx = fx + Math.sin(t * 2.0) * 9;
       ctx.globalAlpha = wa;
-      ctx.drawImage(GLOW_BLUE, wx - 12, wy - 12, 24, 24);
+      ctx.drawImage(GLOW_BLUE, wx - 14, wy - 14, 28, 28);
       ctx.globalAlpha = wa * 0.9;
       ctx.fillStyle = '#dceaff';
       ctx.beginPath(); ctx.arc(wx, wy, 3, 0, Math.PI * 2); ctx.fill();
@@ -2918,9 +3014,9 @@ function drawHUD() {
     ctx.textAlign = 'center';
     ctx.font = '600 18px Georgia, "Times New Roman", serif';
     ctx.fillStyle = 'rgba(0,0,0,0.75)';
-    ctx.fillText(BOSS_NAME + ' — ' + BOSS_TITLE, W / 2 + 1, by - 11);
+    drawTracked(BOSS_NAME, W / 2 + 1, by - 11, 4);
     ctx.fillStyle = B.phase2 ? '#e6b45c' : '#d6cfc2';
-    ctx.fillText(BOSS_NAME + ' — ' + BOSS_TITLE, W / 2, by - 12);
+    drawTracked(BOSS_NAME, W / 2, by - 12, 4);
 
     drawBar(bx, by, bw, 11, B.hp / B.hpMax, B.phase2 ? '#c02a24' : '#a8242c', '#6d161c', B.hpGhost / B.hpMax,
       { frame: B.phase2 ? 'rgba(230,180,92,0.7)' : 'rgba(148,138,116,0.55)' });
@@ -3055,9 +3151,7 @@ function drawIntro() {
   ctx.globalAlpha = clamp((G.screenT - 0.3) / 0.7, 0, 1);
   ctx.fillStyle = '#d6cfc2';
   ctx.font = '600 34px Georgia, "Times New Roman", serif';
-  ctx.fillText(BOSS_NAME, W / 2, H / 2 - 30);
-  ctx.font = 'italic 19px Georgia, serif';
-  ctx.fillText(BOSS_TITLE, W / 2, H / 2);
+  drawTracked(BOSS_NAME, W / 2, H / 2 - 12, 10);
   ctx.globalAlpha = 1;
   ctx.textAlign = 'left';
 }
@@ -3065,9 +3159,10 @@ function drawIntro() {
 function drawDead() {
   drawWorld();
   const t = G.screenT;
-  ctx.fillStyle = `rgba(0,0,0,${clamp(t / 1.2, 0, 0.82)})`;
+  // let him actually fall before the dark takes the screen
+  ctx.fillStyle = `rgba(0,0,0,${clamp((t - 0.85) / 1.5, 0, 0.8)})`;
   ctx.fillRect(0, 0, W, H);
-  const a = clamp((t - 0.4) / 1.6, 0, 1);
+  const a = clamp((t - 1.15) / 1.5, 0, 1);
   ctx.save();
   ctx.textAlign = 'center';
   ctx.translate(W / 2, H / 2);
