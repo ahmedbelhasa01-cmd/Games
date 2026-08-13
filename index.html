@@ -66,7 +66,9 @@ const AudioSys = {
       if (!this.ac) {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return null;
-        this.ac = new AC();
+        // ask for the shortest buffer the device will give us
+        try { this.ac = new AC({ latencyHint: 'interactive' }); }
+        catch (e) { this.ac = new AC(); }
         this.master = this.ac.createGain();
         this.master.gain.value = 0.45;
         this.master.connect(this.ac.destination);
@@ -178,12 +180,15 @@ const sfx = {
   swing(heavy) { this._run((ac, t) => _noise(ac, heavy ? 0.22 : 0.15, 'bandpass', heavy ? 260 : 380, heavy ? 1500 : 1900, 0.5, t)); },
   bossSwing() { this._run((ac, t) => { _noise(ac, 0.28, 'bandpass', 180, 900, 0.65, t); _tone(ac, 'sawtooth', 110, 60, 0.22, 0.12, t); }); },
   /* ---- resolution: it landed ---- */
+  /* An edge, not a bat. The cut is a very brief shear high up; the body under
+     it is short and dull. Mid-range ring is what reads as wood, so there is
+     almost none - only a thin, quick highlight well above it. */
   hitArmor() { this._run((ac, t) => {
-    _noise(ac, 0.03, 'highpass', 3200, 4200, 0.42, t);     // the edge biting plate
-    _tone(ac, 'sine', 175, 58, 0.15, 0.6, t);              // the body behind it
-    _tone(ac, 'triangle', 437, 402, 0.19, 0.16, t);        // inharmonic ring, so it reads as metal
-    _tone(ac, 'triangle', 613, 559, 0.14, 0.11, t + 0.005);
-    _noise(ac, 0.1, 'lowpass', 2100, 420, 0.3, t);
+    _noise(ac, 0.022, 'highpass', 6000, 9000, 0.5, t);      // the shear itself
+    _noise(ac, 0.055, 'bandpass', 4200, 2600, 0.3, t);      // the edge dragging through
+    _tone(ac, 'sine', 150, 52, 0.1, 0.42, t);               // a short, dull body
+    _tone(ac, 'triangle', 2270, 2090, 0.07, 0.07, t);       // one thin highlight, high and gone
+    _noise(ac, 0.05, 'lowpass', 1500, 500, 0.16, t + 0.004);
   }); },
   playerHit() { this._run((ac, t) => {
     _tone(ac, 'sine', 110, 42, 0.28, 0.85, t);             // it lands in your chest
@@ -194,12 +199,12 @@ const sfx = {
 
   /* ---- resolution: it hit nothing. Air, no low end, and gone quickly. ---- */
   whiff(heavy) { this._run((ac, t) => {
-    if (heavy) {
-      _noise(ac, 0.26, 'bandpass', 1400, 380, 0.3, t);
-      _tone(ac, 'sine', 300, 175, 0.14, 0.05, t);          // the blade's own mass
+    if (heavy) {                                            // an edge parting air, and nothing else
+      _noise(ac, 0.24, 'bandpass', 2600, 620, 0.3, t);
+      _tone(ac, 'sine', 300, 175, 0.12, 0.045, t);          // the blade's own mass
     } else {
-      _noise(ac, 0.16, 'bandpass', 2400, 700, 0.24, t);
-      _tone(ac, 'sine', 520, 340, 0.09, 0.035, t);
+      _noise(ac, 0.15, 'bandpass', 4200, 1100, 0.26, t);
+      _tone(ac, 'sine', 520, 340, 0.08, 0.03, t);
     }
   }); },
   bossWhiff(isMaul) { this._run((ac, t) => {
@@ -308,7 +313,7 @@ const sfx = {
     const wg = ac.createGain(); wg.gain.value = 0.3;
     waver.connect(wg); waver.start(t); waver.stop(t + 1.8);
 
-    [[112, 'sawtooth', 0.34], [168, 'sawtooth', 0.2], [56, 'square', 0.22]].forEach(([f0, ty, gain]) => {
+    [[112, 'sawtooth', 0.78], [168, 'sawtooth', 0.44], [56, 'square', 0.5]].forEach(([f0, ty, gain]) => {
       const o = ac.createOscillator(); o.type = ty;
       o.frequency.setValueAtTime(f0, t);
       o.frequency.exponentialRampToValueAtTime(f0 * 0.47, t + 1.6);
@@ -325,8 +330,8 @@ const sfx = {
       o.connect(th); th.connect(g); g.connect(V);
       o.start(t); o.stop(t + 1.8);
     });
-    _noise(ac, 1.5, 'bandpass', 420, 110, 0.24, t, V);           // the ember going out
-    _noise(ac, 0.06, 'highpass', 1800, 3000, 0.16, t, V);
+    _noise(ac, 1.5, 'bandpass', 420, 110, 0.38, t, V);           // the ember going out
+    _noise(ac, 0.06, 'highpass', 1800, 3000, 0.22, t, V);
   }); },
   effort(heavy) { this._run((ac, t) => {  // the sound of putting his weight behind it
     const V = AudioSys.voiceBus;
@@ -1278,6 +1283,7 @@ function killPlayer() {
 function damageBoss(dmg) {
   if (B.state === 'dying' || B.state === 'carve' || G.screen !== 'fight') return;
   if (B.exposedT > 0) dmg *= 2;               // five parries left him open
+  const lethal = B.hp - dmg <= 0;
   B.hp -= dmg;
   B.flash = 0.1;
   B.poise += 1;
@@ -1286,7 +1292,7 @@ function damageBoss(dmg) {
   const a = Math.atan2(P.y - B.y, P.x - B.x);
   spawnParticles(B.x + Math.cos(a) * B.r, B.y + Math.sin(a) * B.r, 10, '#e8e2d0', 170, 0.4);
   G.dmgNums.push({ x: B.x + Math.cos(a) * (B.r + 10), y: B.y + Math.sin(a) * (B.r + 10) - 6, v: dmg, t: 0 });
-  sfx.hitArmor();
+  if (!lethal) sfx.hitArmor();   // the last blow belongs to his cry alone
   rumble(70, 0.15, 0.5);
 
   if (B.poise >= 6 && B.state !== 'stagger' && B.state !== 'break' && B.state !== 'daze' && B.state !== 'hesitate') {
@@ -1314,8 +1320,8 @@ function damageBoss(dmg) {
     G.hitstop = Math.max(G.hitstop, 0.14);
     G.shake = Math.max(G.shake, 12);
     rumble(420, 0.9, 0.7);
-    sfx.deathCry();              // on the voice bus, so the hush below only frames it
-    AudioSys.duck(0.16, 0.25);
+    sfx.deathCry();              // on the voice bus; the room clears out from under it
+    AudioSys.duck(0.045, 0.18);
     spawnParticles(B.x, B.y, 34, '#ffe9a8', 260, 0.9);
     startCarve();
   }
@@ -1332,7 +1338,12 @@ function startCarve() {
   for (let i = 0; i < 9; i++) glyphs.push(makeGlyph(rr, 13, 0.35));
   const strokes = [];
   glyphs.forEach((g2, gi) => { g2.forEach(s => strokes.push({ g: gi, s })); });
-  G.carve = { phase: 'walk', t: 0, x: RING.x, y: RING.y - 30, strokes, progress: 0, scrapeT: 0 };
+  /* He falls where he stood, and writes on the stone in front of him. */
+  G.carve = {
+    phase: 'fall', t: 0,
+    x: B.x + Math.cos(B.face) * 34, y: B.y + Math.sin(B.face) * 20,
+    strokes, progress: 0, scrapeT: 0, thudDone: false
+  };
 }
 
 /* =========================================================================
@@ -1390,7 +1401,6 @@ function updatePlayer(dt) {
     else P.face = Math.atan2(P.act.dirY, P.act.dirX);
     P.act = { type: 'lunge', t: 0, dur: 0.42, hitDone: false, face: P.face };
     G.lastAggro = G.time;
-    sfx.swing(false);
   }
 
   const canAct = !P.act || (P.act.type === 'flask'); // roll may cancel flask (wastes rest of the sip)
@@ -1414,7 +1424,6 @@ function updatePlayer(dt) {
       else P.face = Math.atan2(P.moveDirY, P.moveDirX);
       P.act = { type: 'lunge', t: 0, dur: 0.42, hitDone: false, face: P.face };
       G.lastAggro = G.time;
-      sfx.swing(false);
     } else if (want === 'roll' && P.st > 0) {
       Input.consumeBuffer();
       spendStamina(25);
@@ -1434,7 +1443,7 @@ function updatePlayer(dt) {
       P.act = { type: want, t: 0, dur: heavy ? 0.8 : 0.45, hitDone: false, face: P.face,
                 alt: P.swingAlt ? -1 : 1, charging: heavy, chargeT: 0, chargeToll: false };
       G.lastAggro = G.time;                  // swinging reads as aggression
-      sfx.swing(heavy);
+      // the whoosh waits for the blade to actually sweep — see the slash below
     } else if (want === 'parry' && !P.act && P.st > 0) {
       Input.consumeBuffer();
       spendStamina(10);
@@ -1480,13 +1489,11 @@ function updatePlayer(dt) {
           a.t = 0.30;                         // held at the top of the wind-up
           if (!Input.heavyHeld) {             // released: a tap is exactly the old heavy
             a.charging = false;
-            if (a.chargeT > 0.1) sfx.swing(true);
           } else {
             a.chargeT = Math.min(0.8, a.chargeT + dt);
             if (a.chargeT >= 0.8) {
               if (!a.chargeToll) { a.chargeToll = true; sfx.chargeFull(); }
               a.charging = false;
-              sfx.swing(true);
             }
           }
         }
@@ -1505,7 +1512,12 @@ function updatePlayer(dt) {
           if (heavy && a.chargeT > 0.4) { G.hitstop = Math.max(G.hitstop, 0.1); G.shake = Math.max(G.shake, 8); }
         }
       }
-      if (!a.charging && a.t >= wStart && !a.slashed) { a.slashed = true; addSlash(P.x, P.y, a.face, heavy ? 94 : 80, heavy ? 1.3 : 1.1, '#dfe6f2', 0.16); }
+      // the whoosh lands with the arc, not with the button press
+      if (!a.charging && a.t >= wStart && !a.slashed) {
+        a.slashed = true;
+        sfx.swing(heavy);
+        addSlash(P.x, P.y, a.face, heavy ? 94 : 80, heavy ? 1.3 : 1.1, '#dfe6f2', 0.16);
+      }
       // the window closed on nothing — the blade says so
       if (!a.charging && a.t > wEnd && !a.hitDone && !a.whiffed) { a.whiffed = true; sfx.whiff(heavy); }
       if (!a.charging && a.t >= a.dur) P.act = null;
@@ -1521,7 +1533,7 @@ function updatePlayer(dt) {
           damageBoss(26);
         }
       }
-      if (a.t >= 0.08 && !a.slashed) { a.slashed = true; addSlash(P.x, P.y, a.face, 88, 0.8, '#dfe6f2', 0.14); }
+      if (a.t >= 0.08 && !a.slashed) { a.slashed = true; sfx.swing(false); addSlash(P.x, P.y, a.face, 88, 0.8, '#dfe6f2', 0.14); }
       if (a.t > 0.22 && !a.hitDone && !a.whiffed) { a.whiffed = true; sfx.whiff(false); }
       if (a.t >= a.dur) P.act = null;
     } else if (a.type === 'riposte') {
@@ -1659,18 +1671,17 @@ function updateBoss(dt) {
     const cv = G.carve;
     if (!cv) return;
     cv.t += dt;
-    if (cv.phase === 'walk') {
-      const d = dist(B.x, B.y, RING.x, RING.y);
-      if (d > 8 && cv.t < 3.0) {
-        const a = Math.atan2(RING.y - B.y, RING.x - B.x);
-        B.face = turnToward(B.face, a, 3 * dt);
-        B.x += Math.cos(a) * 62 * dt; B.y += Math.sin(a) * 62 * dt;
-      } else { cv.phase = 'kneel'; cv.t = 0; }
-      B.wOff = lerp(B.wOff, 0.9, 3 * dt); B.wLen = lerp(B.wLen, 52, 3 * dt);
-    } else if (cv.phase === 'kneel') {
-      B.face = turnToward(B.face, -Math.PI / 2, 2.5 * dt);
-      B.wOff = lerp(B.wOff, 1.2, 4 * dt); B.wLen = lerp(B.wLen, 46, 4 * dt);
-      if (cv.t > 0.8) { cv.phase = 'carving'; cv.t = 0; }
+    if (cv.phase === 'fall') {
+      // he goes down where he stood: knees, then forward onto the stone
+      B.wOff = lerp(B.wOff, 1.5, 3 * dt); B.wLen = lerp(B.wLen, 44, 3 * dt);
+      if (!cv.thudDone && cv.t >= 0.95) {
+        cv.thudDone = true;
+        sfx.bodyFall();
+        G.shake = Math.max(G.shake, 9);
+        rumble(300, 0.8, 0.4);
+        spawnParticles(B.x, B.y + 8, 26, 'rgba(150,146,138,0.6)', 150, 0.9);
+      }
+      if (cv.t > 1.9) { cv.phase = 'carving'; cv.t = 0; }
     } else if (cv.phase === 'carving') {
       cv.progress = Math.min(0.93, cv.t / 3.6);      // the final glyph is never finished
       cv.scrapeT -= dt;
@@ -1684,10 +1695,17 @@ function updateBoss(dt) {
       }
       if (cv.t > 4.4) { cv.phase = 'drop'; cv.t = 0; }
     } else if (cv.phase === 'drop') {
-      B.wOff = lerp(B.wOff, 1.7, 3 * dt); B.wLen = lerp(B.wLen, 40, 3 * dt);
+      B.wOff = lerp(B.wOff, 1.7, 3 * dt); B.wLen = lerp(B.wLen, 40, 3 * dt);   // the shard drags off
       if (cv.t > 0.8) { cv.phase = 'still'; cv.t = 0; }
     } else if (cv.phase === 'still') {
-      if (cv.t > 2.0 && G.screen === 'fight') goto('victory');
+      if (cv.t > 1.4) { cv.phase = 'dissolve'; cv.t = 0; AudioSys.duck(0.45, 2.0); }
+    } else if (cv.phase === 'dissolve') {
+      // and then there is no one there
+      if (Math.random() < dt * 46) {
+        spawnDrift(B.x + rand(-30, 30), B.y + rand(-24, 24), rand(-14, 14), rand(-52, -20),
+          Math.random() < 0.5 ? ACCENT : 'rgba(196,190,176,0.55)', rand(0.6, 1.4), rand(1.4, 2.8));
+      }
+      if (cv.t > 2.2 && G.screen === 'fight') goto('victory');
     }
     return;
   }
@@ -2075,7 +2093,7 @@ function update(dt) {
       break;
     }
     case 'victory':
-      if (!G.victoryChimed && G.screenT > 0.4) { G.victoryChimed = true; sfx.chime(); }
+      // no chime — the cry was the sound of this ending
       if (G.screenT > 2.3 && Input.confirm) {
         G.victoryChimed = false;
         resetFight();
@@ -2286,7 +2304,7 @@ function drawCarving() {
     ctx.strokeStyle = i >= full - 3 ? 'rgba(255,158,44,0.5)' : 'rgba(196,188,172,0.32)'; ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.moveTo(gx + st2.s[0], gy + st2.s[1]); ctx.lineTo(gx + x2, gy + y2); ctx.stroke();
   }
-  if (cv.phase !== 'walk' && cv.phase !== 'kneel') {
+  if (cv.phase !== 'fall') {
     const reveal = clamp(cv.progress / 0.93, 0, 1);
     const text = 'NOMAD, NOWHERE TO —';
     const chars = Math.floor(reveal * text.length);
@@ -2688,9 +2706,18 @@ function drawBoss() {
   const dazed = B.state === 'daze';
   if (stag || dazed) ctx.rotate(0.32 * Math.sin(G.time * 3));
   if (B.state === 'hesitate' && B.stateT > 0.5 && B.stateT < 1.15) ctx.rotate(Math.sin(G.time * 40) * 0.012);
-  const kneeling = (carving && G.carve && G.carve.phase !== 'walk') ||
-                   (B.state === 'break' && B.breakStep >= 1 && B.breakStep < 3);
-  if (kneeling) { ctx.scale(1, 0.86); ctx.translate(3, 0); }
+  // going down, and then going out
+  if (carving && G.carve) {
+    const cv = G.carve;
+    let down = 1;                                   // 0 = upright, 1 = flat on the stone
+    if (cv.phase === 'fall') down = clamp(cv.t / 1.5, 0, 1);
+    const e = down * down;
+    ctx.translate(Math.cos(0) * e * 6, e * 9);
+    ctx.scale(1 - e * 0.06, 1 - e * 0.34);          // he settles onto the floor
+    if (cv.phase === 'dissolve') ctx.globalAlpha = alpha * clamp(1 - cv.t / 1.9, 0, 1);
+  } else if (B.state === 'break' && B.breakStep >= 1 && B.breakStep < 3) {
+    ctx.scale(1, 0.86); ctx.translate(3, 0);
+  }
 
   const tele = B.tele;
   const white = B.flash > 0;
