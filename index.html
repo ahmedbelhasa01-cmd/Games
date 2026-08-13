@@ -958,11 +958,16 @@ function updateCamera(dt) {
     const mx = (P.x + B.x) / 2, my = (P.y + B.y) / 2;
     tx = W / 2 + clamp((mx - W / 2) * 0.28, -16, 16);
     ty = H / 2 + clamp((my - H / 2) * 0.28, -9, 9);
-    if (B.state === 'break') { tz = 1.20; tx = lerp(tx, B.x, 0.35); ty = lerp(ty, B.y, 0.35); }
+    if (G.screen === 'dead') {         // stay on the body — this is the beat that was invisible
+      const kk = clamp(G.screenT / 0.7, 0, 1);
+      tz = 1.04 + 0.44 * kk;
+      tx = lerp(W / 2, P.deathX, kk); ty = lerp(H / 2, P.deathY, kk);
+    }
+    else if (B.state === 'break') { tz = 1.20; tx = lerp(tx, B.x, 0.35); ty = lerp(ty, B.y, 0.35); }
     else if (G.slowmo > 0) { tz = 1.34; tx = lerp(tx, B.x, 0.5); ty = lerp(ty, B.y, 0.5); }
     else if (B.state === 'carve') { tz = 1.13; tx = lerp(tx, B.x, 0.3); ty = lerp(ty, B.y, 0.3); }
   }
-  const sp = (G.slowmo > 0 || B.state === 'break') ? 3.4 : 1.6;
+  const sp = (G.slowmo > 0 || B.state === 'break') ? 3.4 : (G.screen === 'dead' ? 2.2 : 1.6);
   G.cam.x = lerp(G.cam.x, tx, Math.min(1, sp * dt));
   G.cam.y = lerp(G.cam.y, ty, Math.min(1, sp * dt));
   G.cam.zoom = lerp(G.cam.zoom, tz, Math.min(1, sp * dt));
@@ -1152,6 +1157,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
 function killPlayer() {
   P.act = null;
   G.deaths++;
+  G.hitstop = Math.max(G.hitstop, 0.2);   // the world catches its breath as he goes down
   sfx.bell();
   rumble(500, 0.8, 0.8);
   goto('dead');
@@ -1921,14 +1927,14 @@ function update(dt) {
       // world freezes behind the overlay; boss finishes its swing cosmetically
       B.tele = Math.max(0, B.tele - dt);
       // he hits the stone
-      if (!P.fellDone && G.screenT >= 0.52) {
+      if (!P.fellDone && G.screenT >= 1.5) {
         P.fellDone = true;
         sfx.bodyFall();
-        G.shake = Math.max(G.shake, 5);
-        spawnParticles(P.deathX, P.deathY + 4, 16, 'rgba(150,146,138,0.55)', 95, 0.75);
+        G.shake = Math.max(G.shake, 7);
+        spawnParticles(P.deathX + Math.cos(P.deathFace) * 8, P.deathY + 5, 22, 'rgba(150,146,138,0.6)', 120, 0.85);
       }
       // and then goes to ash
-      if (G.screenT > 1.05 && G.screenT < 2.9 && Math.random() < dt * 30) {
+      if (G.screenT > 1.75 && G.screenT < 3.6 && Math.random() < dt * 34) {
         spawnDrift(P.deathX + rand(-15, 15), P.deathY + rand(-7, 9),
           rand(-12, 12), rand(-46, -18), 'rgba(196,204,224,0.5)', rand(0.5, 1.2), rand(1.2, 2.4));
       }
@@ -2199,9 +2205,9 @@ function drawPlayer() {
     const t = G.screenT, fx = P.deathX, fy = P.deathY, ff = P.deathFace || 0;
 
     // the ground shadow flattens and spreads as he falls
-    const spread = clamp(t / 0.95, 0, 1);
+    const spread = clamp(t / 1.55, 0, 1);
     ctx.save();
-    ctx.globalAlpha = clamp(1 - (t - 1.1) / 1.7, 0, 1) * 0.45;
+    ctx.globalAlpha = clamp(1 - (t - 1.8) / 1.7, 0, 1) * 0.45;
     ctx.fillStyle = '#000';
     ctx.beginPath();
     ctx.ellipse(fx, fy + 6, 14 + spread * 10, 6 + spread * 2, ff, 0, Math.PI * 2);
@@ -2209,11 +2215,11 @@ function drawPlayer() {
     ctx.restore();
 
     // the sword, dropped and driven point-first into the floor
-    if (t > 0.4) {
-      const k = clamp((t - 0.4) / 0.32, 0, 1);
+    if (t > 0.6) {
+      const k = clamp((t - 0.6) / 0.4, 0, 1);
       const settle = 1 - Math.pow(1 - k, 3);
       ctx.save();
-      ctx.globalAlpha = clamp(1 - (t - 3.2) / 1.0, 0, 1);
+      ctx.globalAlpha = clamp(1 - (t - 4.0) / 1.0, 0, 1);
       ctx.translate(fx + Math.cos(ff + 1.1) * 20, fy + Math.sin(ff + 1.1) * 20 + 2);
       ctx.rotate(Math.PI / 2 + (1 - settle) * 1.4);
       drawSwordProfile(ctx, 30, {});
@@ -2221,24 +2227,25 @@ function drawPlayer() {
     }
 
     // the body
-    const bodyA = clamp(1 - (t - 1.15) / 1.5, 0, 1);
+    const bodyA = clamp(1 - (t - 1.85) / 1.5, 0, 1);
     if (bodyA > 0) {
-      let sink, flat, lean;
-      if (t < 0.45) {                       // the legs give out
-        const k = t / 0.45;
-        sink = k * 3; flat = k * 0.28; lean = k * 0.22;
-      } else if (t < 0.95) {                // pitches forward onto the stone
-        const k = (t - 0.45) / 0.5;
-        const e = k * k;                    // gathers speed as he goes
-        sink = 3 + e * 4; flat = 0.28 + e * 0.6; lean = 0.22 + e * 0.5;
+      let sink, flat, lean, tip;
+      if (t < 0.75) {                       // the legs give out — he holds a moment on his knees
+        const k = t / 0.75;
+        const e = 1 - Math.pow(1 - k, 2);
+        sink = e * 4; flat = e * 0.3; lean = e * 0.2; tip = e * 0.18;
+      } else if (t < 1.55) {                // then pitches forward onto the stone
+        const k = (t - 0.75) / 0.8;
+        const e = k * k;                    // gathering speed as he goes over
+        sink = 4 + e * 6; flat = 0.3 + e * 0.62; lean = 0.2 + e * 0.55; tip = 0.18 + e * 1.0;
       } else {
-        sink = 7; flat = 0.88; lean = 0.72;
+        sink = 10; flat = 0.92; lean = 0.75; tip = 1.18;
       }
       ctx.save();
       ctx.globalAlpha = bodyA;
-      ctx.translate(fx, fy + sink);
+      ctx.translate(fx + Math.cos(ff) * tip * 7, fy + sink + Math.sin(ff) * tip * 7);
       ctx.rotate(ff + lean * 0.25);
-      ctx.scale(1 - flat * 0.18, 1 - flat * 0.62);   // compresses toward the floor
+      ctx.scale(1 - flat * 0.1 + tip * 0.16, 1 - flat * 0.66);   // stretches out as he goes flat
 
       // cloak, pooling out behind him
       ctx.fillStyle = '#2d3a63';
@@ -2270,7 +2277,7 @@ function drawPlayer() {
       ctx.beginPath(); ctx.moveTo(19, 0); ctx.lineTo(2, -8.5); ctx.lineTo(6, 0); ctx.lineTo(2, 8.5); ctx.closePath(); ctx.fill();
       ctx.strokeStyle = '#232938'; ctx.lineWidth = 1.2; ctx.stroke();
       // the light behind the visor goes out as he falls
-      const eye = clamp(1 - t / 0.9, 0, 1);
+      const eye = clamp(1 - t / 1.45, 0, 1);
       if (eye > 0.02) {
         ctx.globalAlpha = bodyA * eye * 0.7;
         ctx.drawImage(GLOW_BLUE, 3, -7, 14, 14);
@@ -2284,7 +2291,7 @@ function drawPlayer() {
     }
 
     // and what is left of him leaves
-    const wt = clamp(t - 1.25, 0, 3.2);
+    const wt = clamp(t - 2.0, 0, 3.2);
     if (wt > 0 && wt < 3.2) {
       const wy = fy - 10 - wt * 26;
       const wa = clamp(1 - wt / 3.2, 0, 0.85) * clamp(wt / 0.4, 0, 1);
@@ -3160,9 +3167,9 @@ function drawDead() {
   drawWorld();
   const t = G.screenT;
   // let him actually fall before the dark takes the screen
-  ctx.fillStyle = `rgba(0,0,0,${clamp((t - 0.85) / 1.5, 0, 0.8)})`;
+  ctx.fillStyle = `rgba(0,0,0,${clamp((t - 1.7) / 1.5, 0, 0.8)})`;
   ctx.fillRect(0, 0, W, H);
-  const a = clamp((t - 1.15) / 1.5, 0, 1);
+  const a = clamp((t - 2.0) / 1.4, 0, 1);
   ctx.save();
   ctx.textAlign = 'center';
   ctx.translate(W / 2, H / 2);
@@ -3180,7 +3187,7 @@ function drawDead() {
   ctx.fillStyle = dg;
   ctx.fillText('YOU DIED', 0, 14);
   ctx.restore();
-  if (t > 2.1) {
+  if (t > 3.0) {          // he can be skipped from 2.1s; the prompt waits for the ash
     const blink = 0.5 + 0.5 * Math.sin(G.time * 3);
     ctx.textAlign = 'center';
     ctx.globalAlpha = blink;
