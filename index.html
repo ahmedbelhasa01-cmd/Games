@@ -60,7 +60,7 @@ function mulberry32(a) {
    AUDIO — all synthesized, created lazily, resumed on any user gesture.
    ========================================================================= */
 const AudioSys = {
-  ac: null, master: null, noiseBuf: null, ambient: null,
+  ac: null, master: null, sfxBus: null, voiceBus: null, noiseBuf: null, ambient: null,
   ensure() {
     try {
       if (!this.ac) {
@@ -70,6 +70,15 @@ const AudioSys = {
         this.master = this.ac.createGain();
         this.master.gain.value = 0.45;
         this.master.connect(this.ac.destination);
+        /* Two buses under the master. Ducking hushes the room by pulling sfxBus
+           down; voiceBus is exempt, so a dying cry rings out OVER the hush
+           instead of being swallowed by it. */
+        this.sfxBus = this.ac.createGain();
+        this.sfxBus.gain.value = 1;
+        this.sfxBus.connect(this.master);
+        this.voiceBus = this.ac.createGain();
+        this.voiceBus.gain.value = 1;
+        this.voiceBus.connect(this.master);
         const len = Math.floor(this.ac.sampleRate * 1.2);
         this.noiseBuf = this.ac.createBuffer(1, len, this.ac.sampleRate);
         const d = this.noiseBuf.getChannelData(0);
@@ -89,7 +98,7 @@ const AudioSys = {
       const bus = ac.createGain();
       bus.gain.value = 0.0001;
       bus.gain.linearRampToValueAtTime(1, t + 3.5);   // fades up as you arrive
-      bus.connect(this.master);
+      bus.connect(this.sfxBus);                        // the bed ducks with everything else
 
       // the drone: two detuned voices, barely moving
       const dg = ac.createGain(); dg.gain.value = 0.055;
@@ -128,20 +137,22 @@ const AudioSys = {
     } catch (e) {}
   },
   ready() { return this.ac && this.ac.state === 'running'; },
+  // hushes the room — the voice bus deliberately rides over it
   duck(level, secs) {
     try {
-      if (!this.ac || !this.master) return;
+      if (!this.ac || !this.sfxBus) return;
       const now = this.ac.currentTime;
-      this.master.gain.cancelScheduledValues(now);
-      this.master.gain.setValueAtTime(this.master.gain.value, now);
-      this.master.gain.linearRampToValueAtTime(level, now + secs);
+      const g = this.sfxBus.gain;
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(level / 0.45, now + secs);   // duck levels were authored against the old 0.45 master
     } catch (e) {}
   }
 };
 ['pointerdown', 'touchstart', 'keydown', 'mousedown'].forEach(ev =>
   window.addEventListener(ev, () => AudioSys.ensure(), { passive: true }));
 
-function _noise(ac, dur, filterType, f0, f1, gain, t0) {
+function _noise(ac, dur, filterType, f0, f1, gain, t0, bus) {
   const src = ac.createBufferSource(); src.buffer = AudioSys.noiseBuf; src.loop = true;
   const filt = ac.createBiquadFilter(); filt.type = filterType;
   filt.frequency.setValueAtTime(f0, t0);
@@ -149,25 +160,56 @@ function _noise(ac, dur, filterType, f0, f1, gain, t0) {
   const g = ac.createGain();
   g.gain.setValueAtTime(gain, t0);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  src.connect(filt); filt.connect(g); g.connect(AudioSys.master);
+  src.connect(filt); filt.connect(g); g.connect(bus || AudioSys.sfxBus);
   src.start(t0); src.stop(t0 + dur + 0.05);
 }
-function _tone(ac, type, f0, f1, dur, gain, t0) {
+function _tone(ac, type, f0, f1, dur, gain, t0, bus) {
   const o = ac.createOscillator(); o.type = type;
   o.frequency.setValueAtTime(f0, t0);
   if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t0 + dur);
   const g = ac.createGain();
   g.gain.setValueAtTime(gain, t0);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  o.connect(g); g.connect(AudioSys.master);
+  o.connect(g); g.connect(bus || AudioSys.sfxBus);
   o.start(t0); o.stop(t0 + dur + 0.05);
 }
 const sfx = {
   _run(fn) { try { const ac = AudioSys.ensure(); if (!ac || ac.state !== 'running') return; fn(ac, ac.currentTime); } catch (e) {} },
   swing(heavy) { this._run((ac, t) => _noise(ac, heavy ? 0.22 : 0.15, 'bandpass', heavy ? 260 : 380, heavy ? 1500 : 1900, 0.5, t)); },
   bossSwing() { this._run((ac, t) => { _noise(ac, 0.28, 'bandpass', 180, 900, 0.65, t); _tone(ac, 'sawtooth', 110, 60, 0.22, 0.12, t); }); },
-  hit() { this._run((ac, t) => { _tone(ac, 'sine', 160, 70, 0.12, 0.55, t); _noise(ac, 0.09, 'lowpass', 2400, 500, 0.4, t); }); },
-  playerHit() { this._run((ac, t) => { _tone(ac, 'sine', 110, 45, 0.25, 0.8, t); _noise(ac, 0.2, 'lowpass', 1400, 250, 0.6, t); }); },
+  /* ---- resolution: it landed ---- */
+  hitArmor() { this._run((ac, t) => {
+    _noise(ac, 0.03, 'highpass', 3200, 4200, 0.42, t);     // the edge biting plate
+    _tone(ac, 'sine', 175, 58, 0.15, 0.6, t);              // the body behind it
+    _tone(ac, 'triangle', 437, 402, 0.19, 0.16, t);        // inharmonic ring, so it reads as metal
+    _tone(ac, 'triangle', 613, 559, 0.14, 0.11, t + 0.005);
+    _noise(ac, 0.1, 'lowpass', 2100, 420, 0.3, t);
+  }); },
+  playerHit() { this._run((ac, t) => {
+    _tone(ac, 'sine', 110, 42, 0.28, 0.85, t);             // it lands in your chest
+    _noise(ac, 0.05, 'highpass', 2600, 1500, 0.3, t);      // the crack of the blow
+    _noise(ac, 0.14, 'bandpass', 900, 380, 0.4, t);        // armour crunching
+    _noise(ac, 0.22, 'lowpass', 1300, 220, 0.55, t);
+  }); },
+
+  /* ---- resolution: it hit nothing. Air, no low end, and gone quickly. ---- */
+  whiff(heavy) { this._run((ac, t) => {
+    if (heavy) {
+      _noise(ac, 0.26, 'bandpass', 1400, 380, 0.3, t);
+      _tone(ac, 'sine', 300, 175, 0.14, 0.05, t);          // the blade's own mass
+    } else {
+      _noise(ac, 0.16, 'bandpass', 2400, 700, 0.24, t);
+      _tone(ac, 'sine', 520, 340, 0.09, 0.035, t);
+    }
+  }); },
+  bossWhiff(isMaul) { this._run((ac, t) => {
+    if (isMaul) {                                          // a great mass passing through empty air
+      _noise(ac, 0.42, 'bandpass', 320, 90, 0.42, t);
+      _tone(ac, 'sine', 70, 40, 0.3, 0.13, t);
+    } else {                                               // the shard, quick and thin
+      _noise(ac, 0.14, 'bandpass', 1800, 600, 0.28, t);
+    }
+  }); },
   roll() { this._run((ac, t) => _noise(ac, 0.2, 'lowpass', 600, 220, 0.3, t)); },
   gulp() { this._run((ac, t) => { _tone(ac, 'sine', 300, 170, 0.12, 0.3, t); _tone(ac, 'sine', 260, 140, 0.12, 0.3, t + 0.16); _tone(ac, 'sine', 230, 120, 0.14, 0.3, t + 0.32); }); },
   flaskEmpty() { this._run((ac, t) => _tone(ac, 'square', 220, 200, 0.07, 0.12, t)); },
@@ -218,10 +260,79 @@ const sfx = {
     _noise(ac, 0.16, 'highpass', 2200, 3600, 0.22, t);
     _tone(ac, 'sawtooth', 150, 210, 0.14, 0.14, t);
   }); },
-  bodyFall() { this._run((ac, t) => {     // armour meeting stone
-    _tone(ac, 'sine', 90, 38, 0.28, 0.6, t);
-    _noise(ac, 0.2, 'lowpass', 700, 120, 0.45, t);
-    _noise(ac, 0.09, 'bandpass', 1900, 900, 0.16, t + 0.01);
+  bodyFall() { this._run((ac, t) => {     // all of him, at once, onto stone
+    _tone(ac, 'sine', 78, 30, 0.4, 0.8, t);
+    _tone(ac, 'sine', 52, 26, 0.5, 0.5, t + 0.01);
+    _noise(ac, 0.26, 'lowpass', 620, 100, 0.55, t);
+    // plate rattling as it settles
+    _noise(ac, 0.1, 'bandpass', 1700, 900, 0.14, t + 0.02);
+    _noise(ac, 0.07, 'bandpass', 2400, 1400, 0.09, t + 0.08);
+    // and the dust it pushes out
+    const d = ac.createBufferSource(); d.buffer = AudioSys.noiseBuf; d.loop = true;
+    const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 900;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.11, t + 0.09);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+    d.connect(f); f.connect(g); g.connect(AudioSys.sfxBus);
+    d.start(t); d.stop(t + 0.75);
+  }); },
+  swordDrop() { this._run((ac, t) => {    // steel onto stone, and a smaller second bounce
+    _noise(ac, 0.02, 'highpass', 3000, 5000, 0.3, t);
+    [1180, 1631, 2390, 3049].forEach((f, i) => {
+      _tone(ac, 'triangle', f, f * 0.992, 0.5 - i * 0.09, 0.13 / (1 + i * 0.55), t);
+    });
+    _tone(ac, 'sine', 220, 120, 0.09, 0.2, t);
+    [1631, 2390].forEach((f, i) => _tone(ac, 'triangle', f * 1.01, f, 0.22 - i * 0.06, 0.05, t + 0.095));
+    _noise(ac, 0.05, 'bandpass', 2600, 1600, 0.07, t + 0.095);
+  }); },
+  helmSigh() { this._run((ac, t) => {     // he is hollow; this is only air leaving
+    const s = ac.createBufferSource(); s.buffer = AudioSys.noiseBuf; s.loop = true;
+    const bp = ac.createBiquadFilter(); bp.type = 'bandpass';
+    bp.Q.value = 1.6;
+    bp.frequency.setValueAtTime(760, t);
+    bp.frequency.exponentialRampToValueAtTime(210, t + 1.15);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.2, t + 0.1);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+    s.connect(bp); bp.connect(g); g.connect(AudioSys.voiceBus);
+    s.start(t); s.stop(t + 1.25);
+    _tone(ac, 'sine', 128, 96, 0.5, 0.05, t + 0.04, AudioSys.voiceBus);   // the barest breath of pitch
+  }); },
+  deathCry() { this._run((ac, t) => {     // it falls, and it fails
+    const V = AudioSys.voiceBus;
+    const waver = ac.createOscillator(); waver.type = 'sine';
+    waver.frequency.setValueAtTime(5.5, t);
+    waver.frequency.linearRampToValueAtTime(13, t + 1.6);   // the tremor worsens
+    const wg = ac.createGain(); wg.gain.value = 0.3;
+    waver.connect(wg); waver.start(t); waver.stop(t + 1.8);
+
+    [[112, 'sawtooth', 0.34], [168, 'sawtooth', 0.2], [56, 'square', 0.22]].forEach(([f0, ty, gain]) => {
+      const o = ac.createOscillator(); o.type = ty;
+      o.frequency.setValueAtTime(f0, t);
+      o.frequency.exponentialRampToValueAtTime(f0 * 0.47, t + 1.6);
+      const th = ac.createBiquadFilter(); th.type = 'bandpass';   // a throat around it
+      th.Q.value = 2.2;
+      th.frequency.setValueAtTime(700, t);
+      th.frequency.exponentialRampToValueAtTime(180, t + 1.5);
+      const g = ac.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(gain, t + 0.07);
+      g.gain.setValueAtTime(gain, t + 0.6);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 1.7);
+      wg.connect(g.gain);                                        // the waver rides the level
+      o.connect(th); th.connect(g); g.connect(V);
+      o.start(t); o.stop(t + 1.8);
+    });
+    _noise(ac, 1.5, 'bandpass', 420, 110, 0.24, t, V);           // the ember going out
+    _noise(ac, 0.06, 'highpass', 1800, 3000, 0.16, t, V);
+  }); },
+  effort(heavy) { this._run((ac, t) => {  // the sound of putting his weight behind it
+    const V = AudioSys.voiceBus;
+    const f0 = heavy ? 96 + Math.random() * 16 : 132 + Math.random() * 20;
+    _tone(ac, 'sawtooth', f0, f0 * 0.72, heavy ? 0.26 : 0.16, heavy ? 0.11 : 0.07, t, V);
+    _noise(ac, heavy ? 0.2 : 0.12, 'bandpass', 400, 190, heavy ? 0.09 : 0.05, t, V);
   }); },
   stab() { this._run((ac, t) => {
     _tone(ac, 'sine', 190, 60, 0.2, 0.7, t);
@@ -261,7 +372,7 @@ const sfx = {
       gn.gain.setValueAtTime(0.0001, t + dl);
       gn.gain.linearRampToValueAtTime(g, t + dl + 0.5);
       gn.gain.exponentialRampToValueAtTime(0.0001, t + dl + 2.0);
-      o.connect(gn); gn.connect(AudioSys.master);
+      o.connect(gn); gn.connect(AudioSys.voiceBus);    // his voice rides over the hush
       o.start(t + dl); o.stop(t + dl + 2.1);
     });
   }); }
@@ -812,7 +923,7 @@ const P = {  // Nomad
   hurtInv: 0,           // post-hit grace
   kbX: 0, kbY: 0,       // knockback velocity
   flash: 0,
-  dead: false, deathX: 0, deathY: 0, deathFace: 0, fellDone: false
+  dead: false, deathX: 0, deathY: 0, deathFace: 0, fellDone: false, swordDropDone: false
 };
 
 const BOSS_NAME = 'ALDRIC';
@@ -928,7 +1039,7 @@ function resetFight() {
   P.flaskMax = flaskAllowance();
   P.flasks = P.flaskMax; P.face = 0; P.moveDirX = 1; P.moveDirY = 0;
   P.locked = false; P.act = null; P.hurtInv = 0; P.kbX = P.kbY = 0; P.flash = 0;
-  P.dead = false; P.fellDone = false; P.deathFace = 0;
+  P.dead = false; P.fellDone = false; P.swordDropDone = false; P.deathFace = 0;
 
   B.x = ARENA.x + ARENA.w - 170; B.y = ARENA.y + ARENA.h / 2;
   B.hp = B.hpMax; B.hpGhost = B.hpMax; B.face = Math.PI;
@@ -1158,6 +1269,7 @@ function killPlayer() {
   P.act = null;
   G.deaths++;
   G.hitstop = Math.max(G.hitstop, 0.2);   // the world catches its breath as he goes down
+  sfx.helmSigh();
   sfx.bell();
   rumble(500, 0.8, 0.8);
   goto('dead');
@@ -1174,7 +1286,7 @@ function damageBoss(dmg) {
   const a = Math.atan2(P.y - B.y, P.x - B.x);
   spawnParticles(B.x + Math.cos(a) * B.r, B.y + Math.sin(a) * B.r, 10, '#e8e2d0', 170, 0.4);
   G.dmgNums.push({ x: B.x + Math.cos(a) * (B.r + 10), y: B.y + Math.sin(a) * (B.r + 10) - 6, v: dmg, t: 0 });
-  sfx.hit();
+  sfx.hitArmor();
   rumble(70, 0.15, 0.5);
 
   if (B.poise >= 6 && B.state !== 'stagger' && B.state !== 'break' && B.state !== 'daze' && B.state !== 'hesitate') {
@@ -1202,6 +1314,7 @@ function damageBoss(dmg) {
     G.hitstop = Math.max(G.hitstop, 0.14);
     G.shake = Math.max(G.shake, 12);
     rumble(420, 0.9, 0.7);
+    sfx.deathCry();              // on the voice bus, so the hush below only frames it
     AudioSys.duck(0.16, 0.25);
     spawnParticles(B.x, B.y, 34, '#ffe9a8', 260, 0.9);
     startCarve();
@@ -1393,6 +1506,8 @@ function updatePlayer(dt) {
         }
       }
       if (!a.charging && a.t >= wStart && !a.slashed) { a.slashed = true; addSlash(P.x, P.y, a.face, heavy ? 94 : 80, heavy ? 1.3 : 1.1, '#dfe6f2', 0.16); }
+      // the window closed on nothing — the blade says so
+      if (!a.charging && a.t > wEnd && !a.hitDone && !a.whiffed) { a.whiffed = true; sfx.whiff(heavy); }
       if (!a.charging && a.t >= a.dur) P.act = null;
     } else if (a.type === 'lunge') {
       // out of a roll or sprint: a fast forward-lunging cut
@@ -1407,6 +1522,7 @@ function updatePlayer(dt) {
         }
       }
       if (a.t >= 0.08 && !a.slashed) { a.slashed = true; addSlash(P.x, P.y, a.face, 88, 0.8, '#dfe6f2', 0.14); }
+      if (a.t > 0.22 && !a.hitDone && !a.whiffed) { a.whiffed = true; sfx.whiff(false); }
       if (a.t >= a.dur) P.act = null;
     } else if (a.type === 'riposte') {
       // the parry's true payoff: a step-in critical stab
@@ -1805,8 +1921,13 @@ function updateBoss(dt) {
     // entering active: the swing sound + arc
     if (ph.k === 'a' && !B.phaseStarted) {
       B.phaseStarted = true; B.hitDone = false;
-      if (B.atkSet === 1) { if (ph.charge) sfx.chargeWhoosh(); else sfx.maulSwing(); }
-      else sfx.shardSwing();
+      if (B.atkSet === 1) {
+        if (ph.charge) sfx.chargeWhoosh(); else sfx.maulSwing();
+        sfx.effort(true);                        // he has to throw his weight into the maul
+      } else {
+        sfx.shardSwing();
+        if (B.atk === 'rising' || B.atk === 'step') sfx.effort(false);   // only the committed cuts
+      }
       if (ph.hit && ph.hit.s === 'arc' && !ph.charge) {
         addSlash(B.x, B.y, B.face + (ph.w[0] + ph.w[1]) / 2, ph.hit.r1, Math.min(ph.hit.half, 2.2), ACCENT, 0.18);
       }
@@ -1846,6 +1967,10 @@ function updateBoss(dt) {
 
     // advance phase
     if (B.phaseT >= pdur) {
+      /* Resolution for the swing we are leaving. Ground-slam attacks are excluded:
+         they strike stone whether or not you are there, and already sound it. A
+         parry or a wall-daze returns before reaching here, so neither whiffs. */
+      if (ph.k === 'a' && ph.hit && !ph.impact && !B.hitDone) sfx.bossWhiff(B.atkSet === 1);
       B.phaseIdx++;
       B.phaseT = 0; B.phaseStarted = false; B.impacted = false;
       if (B.phaseIdx >= atk.phases.length) {
@@ -1927,6 +2052,11 @@ function update(dt) {
       // world freezes behind the overlay; boss finishes its swing cosmetically
       B.tele = Math.max(0, B.tele - dt);
       // he hits the stone
+      // the sword reaches the stone before he does
+      if (!P.swordDropDone && G.screenT >= 1.0) {
+        P.swordDropDone = true;
+        sfx.swordDrop();
+      }
       if (!P.fellDone && G.screenT >= 1.5) {
         P.fellDone = true;
         sfx.bodyFall();
@@ -3386,7 +3516,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, resetFight, damagePlayer, damageBoss, onParrySuccess, bossStartAttack, ATK1, ATK2, startCarve };
+window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, onParrySuccess, bossStartAttack, ATK1, ATK2, startCarve };
 </script>
 </body>
 </html>
