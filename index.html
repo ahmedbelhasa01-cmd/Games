@@ -409,6 +409,7 @@ const Input = {
   kbEdges: {},                  // one-frame edges from key/mouse events
   // unified per-frame edges:
   light: false, heavy: false, lock: false, flask: false, confirm: false, parry: false, pause: false,
+  menuX: 0, menuY: 0, back: false, alt: false, prevMX: 0, prevMY: 0, typed: [],
   moveX: 0, moveY: 0, moveMag: 0,
   sprint: false, blockHeld: false, heavyHeld: false, mouseRDown: false,
   dodgeWasDown: false, dodgeHoldT: 0, dodgeSprinted: false,
@@ -423,6 +424,7 @@ const Input = {
 
   poll(rdt) {
     this.light = this.heavy = this.lock = this.flask = this.confirm = this.parry = this.pause = false;
+    this.back = this.alt = false;
 
     /* ---- gamepad (polled; buttons are not event-driven) ---- */
     let gp = null;
@@ -463,6 +465,8 @@ const Input = {
       if (edge(2)) this.flask = true;                        // X / Square
       if (edge(0) || edge(9)) this.confirm = true;           // A or Start
       if (edge(9)) this.pause = true;                        // Start also pauses the fight
+      if (edge(1)) this.back = true;                         // B — back / skip on menus
+      if (edge(3)) this.alt = true;                          // Y — the secondary menu action
       if (edge(6)) this.parry = true;                        // L2 / LT (analog-safe)
       padBlock = bd(4);                                      // L1 / LB — hold to guard
       padDodgeDown = bd(1);                                  // B / Circle
@@ -489,6 +493,10 @@ const Input = {
     if (this.kbEdges.confirm) this.confirm = true;
     if (this.kbEdges.parry) this.parry = true;
     if (this.kbEdges.pause) this.pause = true;
+    if (this.kbEdges.back) this.back = true;
+    if (this.kbEdges.alt) this.alt = true;
+    this.typed = this.kbTyped || [];
+    this.kbTyped = [];
     const kbDodgeDown = !!this.keys['Space'];
     const kbBlock = !!(this.keys['ShiftLeft'] || this.keys['ShiftRight']);
     this.kbEdges = {};
@@ -510,6 +518,20 @@ const Input = {
     }
     this.dodgeWasDown = down;
     this.blockHeld = padBlock || kbBlock;
+
+    /* menu edges — d-pad or stick, one step per push, for the initials picker */
+    let mx = 0, my = 0;
+    if (gp) {
+      const b2 = gp.buttons || [];
+      const p = i => !!(b2[i] && (b2[i].pressed || b2[i].value > 0.5));
+      if (p(12)) my -= 1; if (p(13)) my += 1; if (p(14)) mx -= 1; if (p(15)) mx += 1;
+    }
+    if (Math.abs(this.moveX) > 0.6) mx += Math.sign(this.moveX);
+    if (Math.abs(this.moveY) > 0.6) my += Math.sign(this.moveY);
+    mx = clamp(mx, -1, 1); my = clamp(my, -1, 1);
+    this.menuX = (mx !== 0 && this.prevMX === 0) ? mx : 0;
+    this.menuY = (my !== 0 && this.prevMY === 0) ? my : 0;
+    this.prevMX = mx; this.prevMY = my;
     this.heavyHeld = this.prevRT || this.mouseRDown;   // for the charged heavy
 
     if (this.light) this.setBuffer('light');
@@ -527,7 +549,15 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyE') Input.kbEdges.flask = true;
   if (e.code === 'KeyF') Input.kbEdges.parry = true;
   if (e.code === 'Enter') Input.kbEdges.confirm = true;
-  if (e.code === 'Escape' || e.code === 'KeyP') Input.kbEdges.pause = true;
+  if (e.code === 'KeyP') Input.kbEdges.pause = true;
+  if (e.code === 'Escape') { if (G.screen === 'fight') Input.kbEdges.pause = true; else Input.kbEdges.back = true; }
+  if (e.code === 'KeyT') Input.kbEdges.alt = true;
+  // letters and backspace go to the initials picker
+  if (G.screen === 'entry') {
+    Input.kbTyped = Input.kbTyped || [];
+    if (/^Key[A-Z]$/.test(e.code)) Input.kbTyped.push(e.code.slice(3));
+    else if (e.code === 'Backspace') { Input.kbTyped.push('\b'); e.preventDefault(); }
+  }
 });
 window.addEventListener('keyup', e => { Input.keys[e.code] = false; });
 canvas.addEventListener('mousedown', e => {
@@ -911,6 +941,9 @@ const G = {
   deaths: 0,            // attempts lost this session — the gate is not merciless
   paused: false,
   padLost: 0,           // a controller vanished mid-fight; hold until it returns
+  tourney: false,       // contest mode: every run ends at the standings
+  runDmg: 0, runT: 0, runKilled: false,
+  entry: ['A', 'A', 'A'], entrySlot: 0, lastRank: -1,
   carve: null,          // the ending: glyphs carved into the practice ring
   victoryChimed: false
 };
@@ -1058,6 +1091,7 @@ function resetFight() {
   G.fissures.length = 0; G.debris = null; G.barLifted = false; G.cinematic = false; G.lastAggro = -10;
   G.carve = null; G.victoryChimed = false;
   G.hitstop = 0; G.shake = 0; G.slowmo = 0; G.paused = false;
+  G.runDmg = 0; G.runT = 0; G.runKilled = false;
   G.cam.x = W / 2; G.cam.y = H / 2; G.cam.zoom = 1.04;
   AudioSys.duck(0.45, 0.2);
 }
@@ -1093,6 +1127,50 @@ function updateCamera(dt) {
   G.cam.y = clamp(G.cam.y, halfH, H - halfH);
 }
 function goto(screen) { G.screen = screen; G.screenT = 0; }
+
+/* =========================================================================
+   THE STANDINGS — for running this as a contest in a room full of people.
+   Kills rank above survivals; kills are ordered by time, the rest by damage.
+   Persisted to localStorage so a stray refresh cannot lose the afternoon.
+   ========================================================================= */
+const SCORE_KEY = 'ashen-gate-standings-v1';
+const Board = {
+  rows: [],
+  load() {
+    try {
+      const raw = localStorage.getItem(SCORE_KEY);
+      this.rows = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(this.rows)) this.rows = [];
+    } catch (e) { this.rows = []; }
+    return this.rows;
+  },
+  save() {
+    try { localStorage.setItem(SCORE_KEY, JSON.stringify(this.rows.slice(0, 60))); }
+    catch (e) {}                      // private windows can refuse; the run still shows on screen
+  },
+  add(name, dmg, ms, killed) {
+    this.rows.push({ name, dmg: Math.round(dmg), ms: Math.round(ms), killed: !!killed, at: Date.now() });
+    this.sort();
+    this.save();
+    return this.rows.indexOf(this.rows.find(r => r.name === name && r.at === this.rows[this.rows.length - 1].at));
+  },
+  sort() {
+    this.rows.sort((a, b) => {
+      if (a.killed !== b.killed) return a.killed ? -1 : 1;   // felling him beats surviving
+      if (a.killed) return a.ms - b.ms;                      // among kills, the fastest
+      return b.dmg - a.dmg;                                  // otherwise, the most damage
+    });
+  },
+  clear() { this.rows = []; this.save(); }
+};
+Board.load();
+
+function fmtTime(ms) {
+  const s = Math.max(0, ms) / 1000;
+  const m = Math.floor(s / 60);
+  const r = (s - m * 60);
+  return m + ':' + (r < 10 ? '0' : '') + r.toFixed(1);
+}
 
 /* =========================================================================
    COMBAT HELPERS
@@ -1284,6 +1362,7 @@ function damageBoss(dmg) {
   if (B.state === 'dying' || B.state === 'carve' || G.screen !== 'fight') return;
   if (B.exposedT > 0) dmg *= 2;               // five parries left him open
   const lethal = B.hp - dmg <= 0;
+  G.runDmg += Math.min(dmg, Math.max(0, B.hp));   // overkill does not pad a score
   B.hp -= dmg;
   B.flash = 0.1;
   B.poise += 1;
@@ -1316,6 +1395,7 @@ function damageBoss(dmg) {
   if (B.hp <= 0) {
     B.hp = 0; B.atk = null; B.tele = 0;
     // the killing blow: time dilates, the room holds its breath
+    G.runKilled = true;
     G.slowmo = 0.55;
     G.hitstop = Math.max(G.hitstop, 0.14);
     G.shake = Math.max(G.shake, 12);
@@ -2043,11 +2123,34 @@ function update(dt) {
 
   switch (G.screen) {
     case 'title':
+      if (Input.alt) { G.tourney = !G.tourney; sfx.chargeFull(); }
+      if (Input.back) { Board.load(); goto('board'); }
       if (Input.confirm) {
         resetFight();
         sfx.fog();
         goto(G.firstFight ? 'intro' : 'refade');
       }
+      break;
+    case 'entry': {
+      const L = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ .-';
+      if (Input.menuY) {
+        const i = L.indexOf(G.entry[G.entrySlot]);
+        G.entry[G.entrySlot] = L[(i - Input.menuY + L.length) % L.length];
+      }
+      if (Input.menuX) G.entrySlot = clamp(G.entrySlot + Input.menuX, 0, 2);
+      for (const ch of Input.typed) {
+        if (ch === '\b') { G.entry[G.entrySlot] = 'A'; G.entrySlot = Math.max(0, G.entrySlot - 1); }
+        else { G.entry[G.entrySlot] = ch; if (G.entrySlot < 2) G.entrySlot++; }
+      }
+      if (Input.back) { goto('title'); }                       // a practice run, not logged
+      if (Input.confirm && G.screenT > 0.25) {
+        G.lastRank = Board.add(G.entry.join(''), G.runDmg, G.runT, G.runKilled);
+        goto('board');
+      }
+      break;
+    }
+    case 'board':
+      if ((Input.confirm || Input.back) && G.screenT > 0.3) { G.lastRank = -1; goto('title'); }
       break;
     case 'intro': {
       // fog-gate walk-in
@@ -2061,6 +2164,7 @@ function update(dt) {
       if (G.screenT >= 0.45) goto('fight');
       break;
     case 'fight':
+      G.runT += dt * 1000;        // paused time is not counted; the clock is the fight
       updatePlayer(dt);
       updateBoss(dt);
       updateFissures(dt);
@@ -2087,8 +2191,8 @@ function update(dt) {
           rand(-12, 12), rand(-46, -18), 'rgba(196,204,224,0.5)', rand(0.5, 1.2), rand(1.2, 2.4));
       }
       if (G.screenT > 2.1 && Input.confirm) {
-        resetFight();
-        goto('refade');
+        if (G.tourney) { G.entrySlot = 0; goto('entry'); }
+        else { resetFight(); goto('refade'); }
       }
       break;
     }
@@ -2096,8 +2200,8 @@ function update(dt) {
       // no chime — the cry was the sound of this ending
       if (G.screenT > 2.3 && Input.confirm) {
         G.victoryChimed = false;
-        resetFight();
-        goto('refade');
+        if (G.tourney) { G.entrySlot = 0; goto('entry'); }
+        else { resetFight(); goto('refade'); }
       }
       break;
   }
@@ -3299,7 +3403,144 @@ function drawTitle() {
   ctx.globalAlpha = blink;
   ctx.fillStyle = '#e8e2d0';
   ctx.font = '600 19px Georgia, serif';
-  ctx.fillText(promptText('confirm') + '  to traverse the fog', W / 2, 476);
+  ctx.fillText(promptText('confirm') + '  to traverse the fog', W / 2, 452);
+  ctx.globalAlpha = 1;
+
+  // contest affordances, kept quiet unless they are in use
+  const pad = Input.device === 'pad';
+  ctx.font = '13px Georgia, serif';
+  ctx.fillStyle = G.tourney ? ACCENT : 'rgba(150,150,160,0.55)';
+  ctx.fillText((pad ? 'Y' : 'T') + ' — contest mode: ' + (G.tourney ? 'ON' : 'off'), W / 2 - 118, 486);
+  ctx.fillStyle = 'rgba(150,150,160,0.55)';
+  ctx.fillText((pad ? 'B' : 'ESC') + ' — standings' + (Board.rows.length ? ' (' + Board.rows.length + ')' : ''), W / 2 + 118, 486);
+  ctx.textAlign = 'left';
+}
+
+function drawEntry() {
+  drawWorld();
+  ctx.fillStyle = 'rgba(4,5,8,0.86)';
+  ctx.fillRect(0, 0, W, H);
+  const pad = Input.device === 'pad';
+  ctx.textAlign = 'center';
+
+  ctx.font = '600 15px Georgia, serif';
+  ctx.fillStyle = G.runKilled ? '#e8c15a' : '#cfc8ba';
+  drawTracked(G.runKilled ? 'THE GATE IS OPEN' : 'THE GATE HELD', W / 2, 116, 5);
+
+  // what this run was worth
+  ctx.font = '600 34px Georgia, "Times New Roman", serif';
+  ctx.fillStyle = '#e6e0d0';
+  ctx.fillText(Math.round(G.runDmg) + ' damage', W / 2, 176);
+  ctx.font = '20px Georgia, serif';
+  ctx.fillStyle = 'rgba(211,204,189,0.8)';
+  ctx.fillText('in ' + fmtTime(G.runT), W / 2, 208);
+
+  ctx.font = '13px Georgia, serif';
+  ctx.fillStyle = 'rgba(211,204,189,0.6)';
+  ctx.fillText('who fought?', W / 2, 262);
+
+  // three slots, arcade style
+  for (let i = 0; i < 3; i++) {
+    const x = W / 2 + (i - 1) * 74, y = 330;
+    const on = i === G.entrySlot;
+    ctx.fillStyle = on ? 'rgba(255,158,44,0.12)' : 'rgba(255,255,255,0.03)';
+    ctx.fillRect(x - 30, y - 46, 60, 62);
+    ctx.strokeStyle = on ? ACCENT : 'rgba(148,138,116,0.4)';
+    ctx.lineWidth = on ? 2 : 1;
+    ctx.strokeRect(x - 30, y - 46, 60, 62);
+    ctx.fillStyle = '#f2ece0';
+    ctx.font = '600 44px Georgia, "Times New Roman", serif';
+    ctx.fillText(G.entry[i], x, y);
+    if (on) {
+      ctx.fillStyle = ACCENT;
+      ctx.font = '13px Georgia, serif';
+      const bl = 0.4 + 0.6 * Math.abs(Math.sin(G.time * 4));
+      ctx.globalAlpha = bl;
+      ctx.fillText('▲', x, y - 58);
+      ctx.fillText('▼', x, y + 34);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  ctx.font = '13px Georgia, serif';
+  ctx.fillStyle = 'rgba(211,204,189,0.65)';
+  ctx.fillText(pad ? 'stick or d-pad to letter        A to enter        B to discard'
+                   : 'type three letters, or arrows        ENTER to enter        ESC to discard',
+    W / 2, 424);
+  ctx.textAlign = 'left';
+}
+
+function drawBoard() {
+  drawFloor();
+  drawFogWall();
+  ctx.fillStyle = 'rgba(4,5,8,0.86)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+
+  ctx.font = '600 30px Georgia, "Times New Roman", serif';
+  const tg = ctx.createLinearGradient(0, 40, 0, 74);
+  tg.addColorStop(0, '#f2ece0'); tg.addColorStop(1, '#a2916f');
+  ctx.fillStyle = tg;
+  drawTracked('THOSE WHO CAME TO THE GATE', W / 2, 66, 6);
+  ctx.strokeStyle = 'rgba(201,163,74,0.5)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(W / 2 - 300, 82); ctx.lineTo(W / 2 + 300, 82); ctx.stroke();
+
+  const rows = Board.rows;
+  if (!rows.length) {
+    ctx.font = 'italic 17px Georgia, serif';
+    ctx.fillStyle = 'rgba(211,204,189,0.5)';
+    ctx.fillText('no one yet', W / 2, 250);
+  } else {
+    // column headers
+    const L = W / 2 - 300, R = W / 2 + 300;
+    ctx.font = '600 12px Georgia, serif';
+    ctx.fillStyle = 'rgba(150,150,160,0.65)';
+    ctx.textAlign = 'left';   ctx.fillText('#', L + 8, 112);
+    ctx.fillText('NAME', L + 46, 112);
+    ctx.textAlign = 'right';  ctx.fillText('DAMAGE', L + 330, 112);
+    ctx.fillText('TIME', L + 452, 112);
+    ctx.textAlign = 'left';   ctx.fillText('FELLED HIM', L + 476, 112);
+
+    const n = Math.min(rows.length, 11);
+    for (let i = 0; i < n; i++) {
+      const r = rows[i], y = 142 + i * 30;
+      const isNew = i === G.lastRank;
+      if (isNew) {
+        ctx.fillStyle = `rgba(255,158,44,${0.10 + 0.06 * Math.sin(G.time * 5)})`;
+        ctx.fillRect(L, y - 20, R - L, 28);
+      }
+      const gold = r.killed;
+      ctx.font = (i < 3 ? '600 ' : '') + '19px Georgia, "Times New Roman", serif';
+      ctx.fillStyle = gold ? '#e8c15a' : (i < 3 ? '#e6e0d0' : 'rgba(211,204,189,0.8)');
+      ctx.textAlign = 'left';
+      ctx.fillText(String(i + 1), L + 8, y);
+      ctx.fillText(r.name, L + 46, y);
+      ctx.textAlign = 'right';
+      ctx.font = (i < 3 ? '600 ' : '') + '19px Georgia, serif';
+      ctx.fillText(String(r.dmg), L + 330, y);
+      ctx.fillText(fmtTime(r.ms), L + 452, y);
+      if (gold) {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#e8c15a';
+        ctx.font = '15px Georgia, serif';
+        ctx.fillText('†', L + 500, y);      // a mark for those who finished it
+      }
+    }
+    if (rows.length > n) {
+      ctx.textAlign = 'center';
+      ctx.font = 'italic 12px Georgia, serif';
+      ctx.fillStyle = 'rgba(150,150,160,0.5)';
+      ctx.fillText('and ' + (rows.length - n) + ' more', W / 2, 142 + n * 30 + 8);
+    }
+  }
+
+  ctx.textAlign = 'center';
+  const blink = 0.55 + 0.45 * Math.sin(G.time * 3);
+  ctx.globalAlpha = blink;
+  ctx.fillStyle = '#cfc8ba';
+  ctx.font = '16px Georgia, serif';
+  ctx.fillText(promptText('confirm') + '  to return', W / 2, 502);
   ctx.globalAlpha = 1;
   ctx.textAlign = 'left';
 }
@@ -3448,6 +3689,8 @@ function render() {
       break;
     }
     case 'fight': drawWorld(); if (G.paused) drawPause(); break;
+    case 'entry': drawEntry(); break;
+    case 'board': drawBoard(); break;
     case 'dead': drawDead(); break;
     case 'victory': drawVictory(); break;
   }
@@ -3543,7 +3786,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, onParrySuccess, bossStartAttack, ATK1, ATK2, startCarve };
+window.__game = { G, P, B, Input, sfx, AudioSys, Board, resetFight, damagePlayer, damageBoss, onParrySuccess, bossStartAttack, ATK1, ATK2, startCarve };
 </script>
 </body>
 </html>
