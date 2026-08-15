@@ -177,7 +177,12 @@ function _tone(ac, type, f0, f1, dur, gain, t0, bus) {
 }
 const sfx = {
   _run(fn) { try { const ac = AudioSys.ensure(); if (!ac || ac.state !== 'running') return; fn(ac, ac.currentTime); } catch (e) {} },
-  swing(heavy) { this._run((ac, t) => _noise(ac, heavy ? 0.22 : 0.15, 'bandpass', heavy ? 260 : 380, heavy ? 1500 : 1900, 0.5, t)); },
+  // the given blade moves a lot of air; the scavenged knives barely move any
+  swing(heavy, thin) {
+    this._run((ac, t) => thin
+      ? _noise(ac, heavy ? 0.11 : 0.07, 'bandpass', heavy ? 900 : 1500, heavy ? 3000 : 3800, 0.3, t)
+      : _noise(ac, heavy ? 0.22 : 0.15, 'bandpass', heavy ? 260 : 380, heavy ? 1500 : 1900, 0.5, t));
+  },
   bossSwing() { this._run((ac, t) => { _noise(ac, 0.28, 'bandpass', 180, 900, 0.65, t); _tone(ac, 'sawtooth', 110, 60, 0.22, 0.12, t); }); },
   /* ---- resolution: it landed ---- */
   /* An edge, not a bat. The cut is a very brief shear high up; the body under
@@ -198,8 +203,11 @@ const sfx = {
   }); },
 
   /* ---- resolution: it hit nothing. Air, no low end, and gone quickly. ---- */
-  whiff(heavy) { this._run((ac, t) => {
-    if (heavy) {                                            // an edge parting air, and nothing else
+  whiff(heavy, thin) { this._run((ac, t) => {
+    if (thin) {                                             // a short knife finding nothing
+      _noise(ac, 0.09, 'bandpass', 5200, 1800, 0.2, t);
+      _tone(ac, 'sine', 760, 520, 0.05, 0.02, t);
+    } else if (heavy) {                                            // an edge parting air, and nothing else
       _noise(ac, 0.24, 'bandpass', 2600, 620, 0.3, t);
       _tone(ac, 'sine', 300, 175, 0.12, 0.045, t);          // the blade's own mass
     } else {
@@ -215,7 +223,11 @@ const sfx = {
       _noise(ac, 0.14, 'bandpass', 1800, 600, 0.28, t);
     }
   }); },
-  roll() { this._run((ac, t) => _noise(ac, 0.2, 'lowpass', 600, 220, 0.3, t)); },
+  roll(light) {
+    this._run((ac, t) => light
+      ? _noise(ac, 0.13, 'lowpass', 1100, 420, 0.22, t)     // she barely touches the floor
+      : _noise(ac, 0.2, 'lowpass', 600, 220, 0.3, t));
+  },
   gulp() { this._run((ac, t) => { _tone(ac, 'sine', 300, 170, 0.12, 0.3, t); _tone(ac, 'sine', 260, 140, 0.12, 0.3, t + 0.16); _tone(ac, 'sine', 230, 120, 0.14, 0.3, t + 0.32); }); },
   flaskEmpty() { this._run((ac, t) => _tone(ac, 'square', 220, 200, 0.07, 0.12, t)); },
   slamImpact() { this._run((ac, t) => { _tone(ac, 'sine', 80, 34, 0.4, 0.9, t); _noise(ac, 0.3, 'lowpass', 900, 120, 0.7, t); }); },
@@ -240,6 +252,13 @@ const sfx = {
     _tone(ac, 'sine', 2300, 1750, 0.16, 0.22, t);
     _tone(ac, 'sine', 320, 150, 0.1, 0.3, t);
     _noise(ac, 0.08, 'highpass', 2600, 4200, 0.3, t);
+  }); },
+  // the bleed meter filling and letting go — a wet tear, not a clang
+  rupture() { this._run((ac, t) => {
+    _noise(ac, 0.26, 'bandpass', 1500, 260, 0.4, t);
+    _tone(ac, 'sawtooth', 190, 58, 0.34, 0.3, t);
+    _tone(ac, 'sine', 92, 40, 0.4, 0.42, t);
+    _noise(ac, 0.5, 'lowpass', 700, 180, 0.16, t);
   }); },
   block() { this._run((ac, t) => {
     _tone(ac, 'sine', 210, 90, 0.14, 0.45, t);
@@ -409,7 +428,7 @@ const Input = {
   kbEdges: {},                  // one-frame edges from key/mouse events
   // unified per-frame edges:
   light: false, heavy: false, lock: false, flask: false, confirm: false, parry: false, pause: false,
-  menuX: 0, menuY: 0, back: false, alt: false, prevMX: 0, prevMY: 0, typed: [],
+  menuL: false, menuR: false, prevMenuX: 0,   // menu left/right, edge-triggered
   moveX: 0, moveY: 0, moveMag: 0,
   sprint: false, blockHeld: false, heavyHeld: false, mouseRDown: false,
   dodgeWasDown: false, dodgeHoldT: 0, dodgeSprinted: false,
@@ -424,7 +443,7 @@ const Input = {
 
   poll(rdt) {
     this.light = this.heavy = this.lock = this.flask = this.confirm = this.parry = this.pause = false;
-    this.back = this.alt = false;
+    this.menuL = this.menuR = false;
 
     /* ---- gamepad (polled; buttons are not event-driven) ---- */
     let gp = null;
@@ -465,17 +484,26 @@ const Input = {
       if (edge(2)) this.flask = true;                        // X / Square
       if (edge(0) || edge(9)) this.confirm = true;           // A or Start
       if (edge(9)) this.pause = true;                        // Start also pauses the fight
-      if (edge(1)) this.back = true;                         // B — back / skip on menus
-      if (edge(3)) this.alt = true;                          // Y — the secondary menu action
       if (edge(6)) this.parry = true;                        // L2 / LT (analog-safe)
       padBlock = bd(4);                                      // L1 / LB — hold to guard
       padDodgeDown = bd(1);                                  // B / Circle
+      if (edge(14)) this.menuL = true;                       // d-pad, for menus
+      if (edge(15)) this.menuR = true;
+
+      // either stick nudged left/right, edge-triggered, for menu choices
+      const mx = Math.abs(rawAx[0] || 0) > Math.abs(rawAx[2] || 0) ? (rawAx[0] || 0) : (rawAx[2] || 0);
+      const mstep = mx > 0.55 ? 1 : (mx < -0.55 ? -1 : 0);
+      if (mstep !== this.prevMenuX) {
+        if (mstep === 1) this.menuR = true;
+        if (mstep === -1) this.menuL = true;
+        this.prevMenuX = mstep;
+      }
 
       const nb = [];
       for (let i = 0; i < b.length; i++) nb[i] = bd(i);
       this.prevPadB = nb;
     } else {
-      this.prevPadB = []; this.prevRT = false;
+      this.prevPadB = []; this.prevRT = false; this.prevMenuX = 0;
     }
 
     /* ---- keyboard/mouse ---- */
@@ -491,12 +519,10 @@ const Input = {
     if (this.kbEdges.lock) this.lock = true;
     if (this.kbEdges.flask) this.flask = true;
     if (this.kbEdges.confirm) this.confirm = true;
-    if (this.kbEdges.parry) this.parry = true;
     if (this.kbEdges.pause) this.pause = true;
-    if (this.kbEdges.back) this.back = true;
-    if (this.kbEdges.alt) this.alt = true;
-    this.typed = this.kbTyped || [];
-    this.kbTyped = [];
+    if (this.kbEdges.parry) this.parry = true;
+    if (this.kbEdges.menuL) this.menuL = true;
+    if (this.kbEdges.menuR) this.menuR = true;
     const kbDodgeDown = !!this.keys['Space'];
     const kbBlock = !!(this.keys['ShiftLeft'] || this.keys['ShiftRight']);
     this.kbEdges = {};
@@ -518,20 +544,6 @@ const Input = {
     }
     this.dodgeWasDown = down;
     this.blockHeld = padBlock || kbBlock;
-
-    /* menu edges — d-pad or stick, one step per push, for the initials picker */
-    let mx = 0, my = 0;
-    if (gp) {
-      const b2 = gp.buttons || [];
-      const p = i => !!(b2[i] && (b2[i].pressed || b2[i].value > 0.5));
-      if (p(12)) my -= 1; if (p(13)) my += 1; if (p(14)) mx -= 1; if (p(15)) mx += 1;
-    }
-    if (Math.abs(this.moveX) > 0.6) mx += Math.sign(this.moveX);
-    if (Math.abs(this.moveY) > 0.6) my += Math.sign(this.moveY);
-    mx = clamp(mx, -1, 1); my = clamp(my, -1, 1);
-    this.menuX = (mx !== 0 && this.prevMX === 0) ? mx : 0;
-    this.menuY = (my !== 0 && this.prevMY === 0) ? my : 0;
-    this.prevMX = mx; this.prevMY = my;
     this.heavyHeld = this.prevRT || this.mouseRDown;   // for the charged heavy
 
     if (this.light) this.setBuffer('light');
@@ -549,15 +561,9 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyE') Input.kbEdges.flask = true;
   if (e.code === 'KeyF') Input.kbEdges.parry = true;
   if (e.code === 'Enter') Input.kbEdges.confirm = true;
-  if (e.code === 'KeyP') Input.kbEdges.pause = true;
-  if (e.code === 'Escape') { if (G.screen === 'fight') Input.kbEdges.pause = true; else Input.kbEdges.back = true; }
-  if (e.code === 'KeyT') Input.kbEdges.alt = true;
-  // letters and backspace go to the initials picker
-  if (G.screen === 'entry') {
-    Input.kbTyped = Input.kbTyped || [];
-    if (/^Key[A-Z]$/.test(e.code)) Input.kbTyped.push(e.code.slice(3));
-    else if (e.code === 'Backspace') { Input.kbTyped.push('\b'); e.preventDefault(); }
-  }
+  if (e.code === 'KeyA' || e.code === 'ArrowLeft') Input.kbEdges.menuL = true;
+  if (e.code === 'KeyD' || e.code === 'ArrowRight') Input.kbEdges.menuR = true;
+  if (e.code === 'Escape' || e.code === 'KeyP') Input.kbEdges.pause = true;
 });
 window.addEventListener('keyup', e => { Input.keys[e.code] = false; });
 canvas.addEventListener('mousedown', e => {
@@ -599,6 +605,7 @@ function makeGlow(r, g, b) {
 const GLOW_EMBER = makeGlow(255, 158, 44);
 const GLOW_BLUE = makeGlow(159, 199, 255);
 const GLOW_GOLD = makeGlow(232, 193, 90);
+const GLOW_RED  = makeGlow(216, 101, 78);   // the pair's dull red — bleed, and their eyes
 
 const FOG_SPRITE = (() => {
   const s = document.createElement('canvas');
@@ -941,23 +948,53 @@ const G = {
   deaths: 0,            // attempts lost this session — the gate is not merciless
   paused: false,
   padLost: 0,           // a controller vanished mid-fight; hold until it returns
-  tourney: false,       // contest mode: every run ends at the standings
-  runDmg: 0, runT: 0, runKilled: false,
-  entry: ['A', 'A', 'A'], entrySlot: 0, lastRank: -1,
+  charIdx: 0,           // who is standing at the gate
   carve: null,          // the ending: glyphs carved into the practice ring
   victoryChimed: false
 };
+
+/* =========================================================================
+   THE TWO WHO COME TO THE GATE.
+   Not stat variants — two different arguments about how to survive him.
+   ========================================================================= */
+const CHARS = [
+  {
+    id: 'blade', name: 'THE GIVEN BLADE',
+    line: 'he took what he was handed, and learned its weight',
+    accent: '#9fc7ff',
+    speed: 158, rollDur: 0.56, rollSpeed: 430,   // grounded; the roll takes a while to end
+    poisePerHit: 1.5,                            // four clean hits break his stance
+    canBlock: true, dashCancel: false, bleed: false,
+    lightDur: 0.55, lightStam: 26, lightDmg: 44, lightReach: 96, lightHalf: 1.45, lightChain: 2,
+    heavyDur: 0.95, heavyStam: 42, heavyDmg: 72, heavyReach: 104, heavyHalf: 1.3,
+    chargeMax: 1.6, chargeDrain: 9
+  },
+  {
+    id: 'pair', name: 'THE SCAVENGED PAIR',
+    line: 'she left his sword in the floor and took the dead ones instead',
+    accent: '#d8654e',
+    speed: 200, rollDur: 0.36, rollSpeed: 500,   // never where the swing is
+    poisePerHit: 0.67,                           // nine hits before he staggers
+    canBlock: false, dashCancel: true, bleed: true,
+    lightDur: 0.26, lightStam: 12, lightDmg: 15, lightReach: 68, lightHalf: 0.95, lightChain: 4,
+    heavyDur: 0.5, heavyStam: 24, heavyDmg: 34, heavyReach: 82, heavyHalf: 1.9,
+    chargeMax: 0, chargeDrain: 0
+  }
+];
+function CH() { return CHARS[G.charIdx] || CHARS[0]; }
+const SP_MAX = 30;     // seconds for the answering blow to come back
 
 const P = {  // Nomad
   x: 0, y: 0, r: 13,
   hp: 100, hpMax: 100, hpGhost: 100,
   st: 100, stMax: 100, stDelay: 0, stFlash: 0,
   walkT: 0, trail: [], scarf: [], speedNow: 0, swingAlt: false,
-  blocking: false, parryStreak: 0,
+  blocking: false, blockStun: 0, chain: 0, chainT: 0, bleedHold: 0,
+  spGauge: 30,           // the answering blow — thirty slow seconds between uses
   flasks: 3, flaskMax: 3,
   face: 0, moveDirX: 1, moveDirY: 0,
   locked: false,
-  act: null,            // {type:'roll'|'light'|'heavy'|'parry'|'flask'|'hurt', t, dur, ...}
+  act: null,            // {type:'roll'|'light'|'heavy'|'parry'|'special'|'flask'|'hurt', t, dur, ...}
   hurtInv: 0,           // post-hit grace
   kbX: 0, kbY: 0,       // knockback velocity
   flash: 0,
@@ -976,7 +1013,7 @@ const B = {  // boss
   atk: null, atkSet: 1, phaseIdx: 0, phaseT: 0, phaseDur: 0, hitDone: false,
   poise: 0, staggerT: 0,
   strafeDir: 1, strafeT: 0, approachT: 0,
-  exposedT: 0,          // five parries in a row: double damage
+  bleed: 0, bleedMax: 100,   // the scavenged blades open him up
   broken: false,        // the haft is snapped; phase 2 weapon
   breakStep: 0,
   dazeT: 0,             // charged into the wall
@@ -1072,7 +1109,8 @@ const ATK2 = {
 function resetFight() {
   P.x = ARENA.x + 130; P.y = ARENA.y + ARENA.h / 2;
   P.hp = P.hpMax; P.hpGhost = P.hpMax; P.st = P.stMax; P.stDelay = 0; P.stFlash = 0;
-  P.walkT = 0; P.trail.length = 0; P.speedNow = 0; P.blocking = false; P.parryStreak = 0;
+  P.walkT = 0; P.trail.length = 0; P.speedNow = 0; P.blocking = false;
+  P.blockStun = 0; P.chain = 0; P.chainT = 0; P.bleedHold = 0; P.spGauge = SP_MAX;
   P.scarf = []; for (let i = 0; i < 6; i++) P.scarf.push({ x: P.x, y: P.y });
   P.flaskMax = flaskAllowance();
   P.flasks = P.flaskMax; P.face = 0; P.moveDirX = 1; P.moveDirY = 0;
@@ -1083,7 +1121,7 @@ function resetFight() {
   B.hp = B.hpMax; B.hpGhost = B.hpMax; B.face = Math.PI;
   B.phase2 = false; B.state = 'idle'; B.stateT = 0; B.cd = 1.1;
   B.atk = null; B.atkSet = 1; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
-  B.poise = 0; B.staggerT = 0; B.exposedT = 0; B.wOff = 0.5; B.wLen = 86; B.tele = 0; B.flash = 0; B.dieT = 0;
+  B.poise = 0; B.staggerT = 0; B.bleed = 0; B.wOff = 0.5; B.wLen = 86; B.tele = 0; B.flash = 0; B.dieT = 0;
   B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0; B.readCd = 0;
   B.hesitated = false; B.mourned = false; B.coreDim = 0; B.guarding = false;
 
@@ -1091,7 +1129,6 @@ function resetFight() {
   G.fissures.length = 0; G.debris = null; G.barLifted = false; G.cinematic = false; G.lastAggro = -10;
   G.carve = null; G.victoryChimed = false;
   G.hitstop = 0; G.shake = 0; G.slowmo = 0; G.paused = false;
-  G.runDmg = 0; G.runT = 0; G.runKilled = false;
   G.cam.x = W / 2; G.cam.y = H / 2; G.cam.zoom = 1.04;
   AudioSys.duck(0.45, 0.2);
 }
@@ -1127,50 +1164,6 @@ function updateCamera(dt) {
   G.cam.y = clamp(G.cam.y, halfH, H - halfH);
 }
 function goto(screen) { G.screen = screen; G.screenT = 0; }
-
-/* =========================================================================
-   THE STANDINGS — for running this as a contest in a room full of people.
-   Kills rank above survivals; kills are ordered by time, the rest by damage.
-   Persisted to localStorage so a stray refresh cannot lose the afternoon.
-   ========================================================================= */
-const SCORE_KEY = 'ashen-gate-standings-v1';
-const Board = {
-  rows: [],
-  load() {
-    try {
-      const raw = localStorage.getItem(SCORE_KEY);
-      this.rows = raw ? JSON.parse(raw) : [];
-      if (!Array.isArray(this.rows)) this.rows = [];
-    } catch (e) { this.rows = []; }
-    return this.rows;
-  },
-  save() {
-    try { localStorage.setItem(SCORE_KEY, JSON.stringify(this.rows.slice(0, 60))); }
-    catch (e) {}                      // private windows can refuse; the run still shows on screen
-  },
-  add(name, dmg, ms, killed) {
-    this.rows.push({ name, dmg: Math.round(dmg), ms: Math.round(ms), killed: !!killed, at: Date.now() });
-    this.sort();
-    this.save();
-    return this.rows.indexOf(this.rows.find(r => r.name === name && r.at === this.rows[this.rows.length - 1].at));
-  },
-  sort() {
-    this.rows.sort((a, b) => {
-      if (a.killed !== b.killed) return a.killed ? -1 : 1;   // felling him beats surviving
-      if (a.killed) return a.ms - b.ms;                      // among kills, the fastest
-      return b.dmg - a.dmg;                                  // otherwise, the most damage
-    });
-  },
-  clear() { this.rows = []; this.save(); }
-};
-Board.load();
-
-function fmtTime(ms) {
-  const s = Math.max(0, ms) / 1000;
-  const m = Math.floor(s / 60);
-  const r = (s - m * 60);
-  return m + ':' + (r < 10 ? '0' : '') + r.toFixed(1);
-}
 
 /* =========================================================================
    COMBAT HELPERS
@@ -1248,50 +1241,20 @@ function updateDebris(dt) {
   if (d.settleT <= 0) { d.vx = d.vy = d.vr = 0; }
 }
 
-// A successful parry: the strike is turned, Aldric reels, clean streaks expose him.
-function onParrySuccess() {
-  if (P.act) P.act.success = true;
-  P.act = null;                              // instant recovery — the window is the reward
-  P.hurtInv = Math.max(P.hurtInv, 0.3);
-  P.parryStreak++;
-  const mx = (P.x + B.x) / 2, my = (P.y + B.y) / 2;
-  spawnParticles(mx, my, 22, '#ffe9a8', 260, 0.5);
-  spawnParticles(mx, my, 10, '#f2f6ff', 330, 0.3);
-  addSlash(mx, my, Math.atan2(P.y - B.y, P.x - B.x), 44, Math.PI, '#ffe9a8', 0.12);
-  G.hitstop = Math.max(G.hitstop, 0.09);
-  G.shake = Math.max(G.shake, 7);
-  sfx.parry();
-  rumble(140, 0.5, 0.9);
-  if (B.state !== 'dying' && B.state !== 'stagger' && B.state !== 'carve') {
-    B.state = 'recoil'; B.stateT = 0; B.atk = null; B.tele = 0;
-    B.poise += 1;
-    if (B.poise >= 6) {
-      B.state = 'stagger'; B.stateT = 0; B.staggerT = 1.5; B.poise = 0;
-      sfx.stagger();
-      G.shake = Math.max(G.shake, 8);
-      spawnParticles(B.x, B.y, 24, ACCENT, 220, 0.6);
-    }
-  }
-  if (P.parryStreak >= 5) {                  // five clean turns of the blade — he is EXPOSED
-    P.parryStreak = 0;
-    B.exposedT = 10;
-    sfx.exposed();
-    spawnParticles(B.x, B.y, 30, '#e8c15a', 250, 0.8);
-    G.shake = Math.max(G.shake, 6);
-    rumble(320, 0.4, 0.85);
-  }
-}
-
 function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
   if (P.dead) return false;
-  // parry — active window near the start of the swing turns any parryable strike
-  if (parryable && P.act && P.act.type === 'parry' && P.act.t >= 0.02 && P.act.t <= 0.2) {
-    onParrySuccess();
-    return true;
-  }
   if (playerInvulnerable()) return false;
+  // PARRY — the blade turned aside at the exact moment, from the front
+  if (parryable && P.act && P.act.type === 'parry' && P.act.t <= 0.2) {
+    const toSrc = Math.atan2(srcY - P.y, srcX - P.x);
+    if (Math.abs(angDiff(P.face, toSrc)) < 1.9) {
+      P.act.success = true;
+      onParrySuccess();
+      return false;                          // the hit never lands
+    }
+  }
   // block — guard held, attack from the front
-  if (P.blocking && P.st > 0) {
+  if (P.blocking && CH().canBlock && P.st > 0) {
     const toSrc = Math.atan2(srcY - P.y, srcX - P.x);
     if (Math.abs(angDiff(P.face, toSrc)) < 1.75) {
       // the shard's quick cuts are hard to catch — they eat far more stamina through a guard
@@ -1306,6 +1269,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
         G.hitstop = Math.max(G.hitstop, 0.035);
         G.shake = Math.max(G.shake, 4);
         sfx.block();
+        P.blockStun = 0.2;                   // shoved back onto your heels for a beat
         rumble(90, 0.3, 0.5);
         if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; P.deathFace = P.face; killPlayer(); }
         return true;
@@ -1316,7 +1280,6 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
       P.hp -= dmg;
       P.flash = 0.12;
       P.hurtInv = 0.45;
-      P.parryStreak = 0;
       const gba = Math.atan2(P.y - srcY, P.x - srcX);
       P.kbX = Math.cos(gba) * 330; P.kbY = Math.sin(gba) * 330;
       P.act = { type: 'hurt', t: 0, dur: 0.7 };
@@ -1332,7 +1295,6 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
   P.hp -= dmg;
   P.flash = 0.12;
   P.hurtInv = 0.45;
-  P.parryStreak = 0;                          // a clean hit ends the streak
   const a = Math.atan2(P.y - srcY, P.x - srcX);
   const kb = 260 * (kbMult || 1);
   P.kbX = Math.cos(a) * kb; P.kbY = Math.sin(a) * kb;
@@ -1358,14 +1320,12 @@ function killPlayer() {
   goto('dead');
 }
 
-function damageBoss(dmg) {
+function damageBoss(dmg, noBleed) {
   if (B.state === 'dying' || B.state === 'carve' || G.screen !== 'fight') return;
-  if (B.exposedT > 0) dmg *= 2;               // five parries left him open
   const lethal = B.hp - dmg <= 0;
-  G.runDmg += Math.min(dmg, Math.max(0, B.hp));   // overkill does not pad a score
   B.hp -= dmg;
   B.flash = 0.1;
-  B.poise += 1;
+  B.poise += CH().poisePerHit;
   G.hitstop = Math.max(G.hitstop, 0.07);
   G.shake = Math.max(G.shake, 4);
   const a = Math.atan2(P.y - B.y, P.x - B.x);
@@ -1373,6 +1333,7 @@ function damageBoss(dmg) {
   G.dmgNums.push({ x: B.x + Math.cos(a) * (B.r + 10), y: B.y + Math.sin(a) * (B.r + 10) - 6, v: dmg, t: 0 });
   if (!lethal) sfx.hitArmor();   // the last blow belongs to his cry alone
   rumble(70, 0.15, 0.5);
+  if (!noBleed && !lethal) addBleed(dmg * 0.5);   // the pair's cuts open him up
 
   if (B.poise >= 6 && B.state !== 'stagger' && B.state !== 'break' && B.state !== 'daze' && B.state !== 'hesitate') {
     B.state = 'stagger'; B.stateT = 0; B.staggerT = 1.5; B.poise = 0;
@@ -1395,7 +1356,6 @@ function damageBoss(dmg) {
   if (B.hp <= 0) {
     B.hp = 0; B.atk = null; B.tele = 0;
     // the killing blow: time dilates, the room holds its breath
-    G.runKilled = true;
     G.slowmo = 0.55;
     G.hitstop = Math.max(G.hitstop, 0.14);
     G.shake = Math.max(G.shake, 12);
@@ -1408,6 +1368,50 @@ function damageBoss(dmg) {
 }
 
 function spendStamina(cost) { P.st = Math.max(-25, P.st - cost); P.stDelay = 0.7; }
+
+/* A perfect parry: his swing is turned, and for a moment he is the one exposed. */
+function onParrySuccess() {
+  sfx.parry();
+  G.hitstop = Math.max(G.hitstop, 0.09);
+  G.shake = Math.max(G.shake, 6);
+  rumble(160, 0.5, 0.9);
+  const mx = (P.x + B.x) / 2, my = (P.y + B.y) / 2;
+  spawnParticles(mx, my, 18, '#ffe9a8', 260, 0.45);
+  spawnParticles(mx, my, 8, '#f2f6ff', 340, 0.3);
+  if (B.state === 'attack' || B.state === 'idle' || B.state === 'chainPause') {
+    B.state = 'recoil'; B.stateT = 0;
+    B.atk = null; B.tele = 0; B.phaseStarted = false;
+  }
+}
+
+/* Aldric's poise, ended outright rather than chipped away — the charged smash. */
+function breakPoise() {
+  if (B.state === 'stagger' || B.state === 'break' || B.state === 'daze' || B.state === 'hesitate') return;
+  if (B.state === 'carve' || B.hp <= 0) return;
+  B.state = 'stagger'; B.stateT = 0; B.staggerT = 1.8; B.poise = 0;
+  B.atk = null; B.tele = 0;
+  sfx.stagger();
+  G.shake = Math.max(G.shake, 10);
+  spawnParticles(B.x, B.y, 26, ACCENT, 230, 0.6);
+}
+
+/* BLEED — the scavenged pair cannot break him, so they open him instead.
+   Every cut fills the meter; full, it ruptures and empties. */
+function addBleed(n) {
+  if (!CH().bleed || B.state === 'carve' || B.hp <= 0 || G.screen !== 'fight') return;
+  B.bleed = Math.min(B.bleedMax, B.bleed + n);
+  P.bleedHold = 1.6;                       // it only decays once you stop cutting
+  if (B.bleed >= B.bleedMax) {
+    B.bleed = 0;
+    sfx.rupture();
+    G.hitstop = Math.max(G.hitstop, 0.11);
+    G.shake = Math.max(G.shake, 9);
+    rumble(260, 0.6, 0.8);
+    spawnParticles(B.x, B.y, 30, '#c0392b', 260, 0.7);
+    spawnParticles(B.x, B.y, 12, '#e8654e', 320, 0.4);
+    damageBoss(90, true);                  // the rupture itself does not feed the meter
+  }
+}
 
 /* ---------- the carving (the ending) ---------- */
 function startCarve() {
@@ -1465,46 +1469,26 @@ function updatePlayer(dt) {
   if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
   else if (mag > 0.01 && (!P.act || P.act.type === 'flask')) P.face = Math.atan2(mvY, mvX);
 
-  // guard is a held stance, only while otherwise free
-  P.blocking = Input.blockHeld && !P.act && G.screen === 'fight';
+  // guard is a held stance, and only the one who was given a real sword has one
+  P.blocking = Input.blockHeld && CH().canBlock && !P.act && G.screen === 'fight';
 
   const busy = P.act && P.act.type !== 'flask';
   const sprinting = Input.sprint && !busy && !P.blocking && mag > 0.01 && P.st > 0;
 
   /* ---- start buffered actions ---- */
-  // the tail of a roll can flow straight into a lunging cut
-  const rollTail = P.act && P.act.type === 'roll' && P.act.t > P.act.dur * 0.55;
-  if (rollTail && G.screen === 'fight' && Input.peekBuffer() === 'light' && P.st > 0) {
-    Input.consumeBuffer();
-    spendStamina(15);
-    if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
-    else P.face = Math.atan2(P.act.dirY, P.act.dirX);
-    P.act = { type: 'lunge', t: 0, dur: 0.42, hitDone: false, face: P.face };
-    G.lastAggro = G.time;
+  const C = CH();
+  // DASH-CANCEL — the scavenged pair may leave any attack's recovery early.
+  // This is the whole character: mobility instead of a guard.
+  let canAct = (!P.act || (P.act.type === 'flask')) && P.blockStun <= 0;
+  if (!canAct && C.dashCancel && P.act && Input.peekBuffer() === 'roll' && P.st > 0) {
+    const a = P.act;
+    const past = a.t > a.dur * (a.type === 'heavy' ? 0.64 : 0.68);   // the cut is spent; the rest is recovery
+    if (past) canAct = true;                 // the cut has already landed; the rest is just recovery
   }
 
-  const canAct = !P.act || (P.act.type === 'flask'); // roll may cancel flask (wastes rest of the sip)
   if (canAct && G.screen === 'fight') {
     const want = Input.peekBuffer();
-    // RIPOSTE — he's reeling off a parry, and you're close, facing him
-    if (want === 'light' && !P.act && P.st > 0 && B.state === 'recoil' &&
-        dist(P.x, P.y, B.x, B.y) < B.r + 64 &&
-        Math.abs(angDiff(P.face, Math.atan2(B.y - P.y, B.x - P.x))) < 1.0) {
-      Input.consumeBuffer();
-      spendStamina(20);
-      P.face = Math.atan2(B.y - P.y, B.x - P.x);
-      P.act = { type: 'riposte', t: 0, dur: 0.66, hitDone: false, face: P.face };
-      G.lastAggro = G.time;
-      sfx.swing(true);
-    } else if (want === 'light' && !P.act && P.st > 0 && sprinting) {
-      // a sprint flows into the same lunging cut
-      Input.consumeBuffer();
-      spendStamina(15);
-      if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
-      else P.face = Math.atan2(P.moveDirY, P.moveDirX);
-      P.act = { type: 'lunge', t: 0, dur: 0.42, hitDone: false, face: P.face };
-      G.lastAggro = G.time;
-    } else if (want === 'roll' && P.st > 0) {
+    if (want === 'roll' && P.st > 0) {
       Input.consumeBuffer();
       spendStamina(25);
       let dx = P.moveDirX, dy = P.moveDirY;
@@ -1512,24 +1496,39 @@ function updatePlayer(dt) {
         if (P.locked) { const a = Math.atan2(P.y - B.y, P.x - B.x); dx = Math.cos(a); dy = Math.sin(a); }
         else { dx = Math.cos(P.face); dy = Math.sin(P.face); }
       } else { dx = mvX / (Math.hypot(mvX, mvY) || 1); dy = mvY / (Math.hypot(mvX, mvY) || 1); }
-      P.act = { type: 'roll', t: 0, dur: 0.45, dirX: dx, dirY: dy };
-      sfx.roll();
-    } else if ((want === 'light' || want === 'heavy') && (!P.act) && P.st > 0) {
-      Input.consumeBuffer();
-      const heavy = want === 'heavy';
-      spendStamina(heavy ? 35 : 20);
-      if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
-      P.swingAlt = !P.swingAlt;              // alternate the cut's direction
-      P.act = { type: want, t: 0, dur: heavy ? 0.8 : 0.45, hitDone: false, face: P.face,
-                alt: P.swingAlt ? -1 : 1, charging: heavy, chargeT: 0, chargeToll: false };
-      G.lastAggro = G.time;                  // swinging reads as aggression
-      // the whoosh waits for the blade to actually sweep — see the slash below
-    } else if (want === 'parry' && !P.act && P.st > 0) {
+      P.act = { type: 'roll', t: 0, dur: C.rollDur, dirX: dx, dirY: dy };
+      sfx.roll(C.id === 'pair');
+    } else if (want === 'parry' && (!P.act) && P.st > 0) {
       Input.consumeBuffer();
       spendStamina(10);
       if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
       P.act = { type: 'parry', t: 0, dur: 0.45, success: false };
-      sfx.swing(false);
+      G.lastAggro = G.time;
+    } else if ((want === 'light' || want === 'heavy') && (!P.act) && P.st > 0
+               && B.state === 'recoil' && P.spGauge >= SP_MAX
+               && dist(P.x, P.y, B.x, B.y) < 170) {
+      /* THE ANSWERING BLOW — he is reeling from a parry, and the long-held
+         debt is called in. Same price paid to him either way; the two do not
+         collect it the same way. */
+      Input.consumeBuffer();
+      P.spGauge = 0;
+      P.face = Math.atan2(B.y - P.y, B.x - P.x);
+      P.act = { type: 'special', t: 0, dur: C.id === 'pair' ? 0.72 : 0.66, face: P.face, stabs: 0 };
+      G.lastAggro = G.time;
+    } else if ((want === 'light' || want === 'heavy') && (!P.act) && P.st > 0) {
+      Input.consumeBuffer();
+      const heavy = want === 'heavy';
+      spendStamina(heavy ? C.heavyStam : C.lightStam);
+      if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
+      // light attacks chain, alternating side; the chain lapses if you pause
+      if (!heavy && P.chainT > 0) P.chain = (P.chain + 1) % C.lightChain;
+      else if (!heavy) P.chain = 0;
+      P.chainT = 0.55;
+      P.swingAlt = !P.swingAlt;
+      P.act = { type: want, t: 0, dur: heavy ? C.heavyDur : C.lightDur, hitDone: false, face: P.face,
+                side: heavy ? 1 : (P.chain % 2 ? -1 : 1), held: 0,
+                charging: heavy && C.chargeMax > 0, chargeT: 0, chargeToll: false };
+      G.lastAggro = G.time;                  // swinging reads as aggression
     } else if ((want === 'light' || want === 'heavy' || want === 'roll' || want === 'parry') && P.st <= 0) {
       // not enough stamina — drop it and flash the stamina bar
       Input.consumeBuffer();
@@ -1552,7 +1551,7 @@ function updatePlayer(dt) {
     const a = P.act;
     if (a.type === 'roll') {
       const k = a.t / a.dur;
-      const sp = 470 * (1 - k * 0.75);
+      const sp = C.rollSpeed * (1 - k * 0.75);
       P.x += a.dirX * sp * dt; P.y += a.dirY * sp * dt;
       P.trail.push({ x: P.x, y: P.y, rot: Math.atan2(a.dirY, a.dirX), a: 0.9 });
       if (a.dirX * (B.x - P.x) + a.dirY * (B.y - P.y) > 0) G.lastAggro = G.time;   // rolling in counts
@@ -1561,90 +1560,123 @@ function updatePlayer(dt) {
     } else if (a.type === 'light' || a.type === 'heavy') {
       speedMul = 0;
       const heavy = a.type === 'heavy';
-      const wStart = heavy ? 0.34 : 0.14, wEnd = heavy ? 0.5 : 0.27;
-      // CHARGED HEAVY: keep the trigger held and he holds the wind-up,
-      // the blade gathering light — release (or 0.8s) lets it fall harder.
+      const held = a.held || 0;                    // time spent frozen at the top of a charge
+      const et = a.t - held;                       // elapsed swing time, charge excluded
+      const wStart = a.dur * (heavy ? 0.42 : 0.38), wEnd = a.dur * (heavy ? 0.64 : 0.68);
+
+      /* THE GIVEN BLADE's charged heavy: keep the trigger down and he holds the
+         sword at the top, the edge gathering pale light. It burns stamina the
+         whole time, and a hit knocks it out of him. Released full, it does not
+         just hurt — it takes Aldric off his feet. */
       if (heavy && a.charging) {
-        if (a.t >= 0.30) {
-          a.t = 0.30;                         // held at the top of the wind-up
-          if (!Input.heavyHeld) {             // released: a tap is exactly the old heavy
-            a.charging = false;
-          } else {
-            a.chargeT = Math.min(0.8, a.chargeT + dt);
-            if (a.chargeT >= 0.8) {
-              if (!a.chargeToll) { a.chargeToll = true; sfx.chargeFull(); }
+        if (et >= a.dur * 0.32) {
+          a.held = held + dt;                      // frozen: et stops advancing
+          /* the held wind-up tracks — locked on he keeps the point on Aldric,
+             unlocked he can be steered with the stick. Release latches it:
+             the falling blade itself stays committed and dodgeable. */
+          if (P.locked) a.face = Math.atan2(B.y - P.y, B.x - P.x);
+          else if (Input.moveMag > 0.01) a.face = turnToward(a.face, Math.atan2(Input.moveY, Input.moveX), 2.5 * dt);
+          P.face = a.face;
+          if (!Input.heavyHeld) a.charging = false;
+          else {
+            a.chargeT = Math.min(C.chargeMax, a.chargeT + dt);
+            P.st = Math.max(-25, P.st - C.chargeDrain * dt); P.stDelay = 0.7;
+            if (a.chargeT >= C.chargeMax || P.st <= 0) {
+              if (!a.chargeToll && a.chargeT >= C.chargeMax) { a.chargeToll = true; sfx.chargeFull(); }
               a.charging = false;
             }
+            if (Math.random() < 0.25) spawnDrift(P.x + rand(-14, 14), P.y + rand(-14, 6), rand(-10, 10), rand(-30, -8), COOL, 0.5, 2);
           }
         }
       }
-      const power = heavy ? (1 + (a.chargeT || 0) * 0.6) : 1;   // 58 -> up to ~86
-      if (heavy && !a.charging && a.t > 0.15 && a.t < 0.45) {
-        const step = 150 * (1 + (a.chargeT || 0) * 0.5);
+      const ck = C.chargeMax > 0 ? (a.chargeT || 0) / C.chargeMax : 0;
+      const full = ck >= 0.55;                     // enough of a charge to matter
+      const power = heavy ? 1 + ck * 1.0 : 1;
+
+      // both heavies carry the body forward — one steps into it, one spins through it
+      if (heavy && !a.charging && et > a.dur * 0.16 && et < a.dur * 0.62) {
+        const step = (C.id === 'pair' ? 330 : 150) * (1 + ck * 0.5);
         P.x += Math.cos(a.face) * step * dt; P.y += Math.sin(a.face) * step * dt;
       }
-      if (!a.hitDone && !a.charging && a.t >= wStart && a.t <= wEnd) {
-        const r1 = heavy ? 94 : 80, half = heavy ? 1.35 : 1.2;
-        const d = dist(P.x, P.y, B.x, B.y);
-        if (d < r1 + B.r && Math.abs(angDiff(a.face, Math.atan2(B.y - P.y, B.x - P.x))) < half + Math.asin(clamp(B.r / Math.max(d, B.r), 0, 1))) {
-          a.hitDone = true;
-          damageBoss(Math.round((heavy ? 58 : 30) * power));
-          if (heavy && a.chargeT > 0.4) { G.hitstop = Math.max(G.hitstop, 0.1); G.shake = Math.max(G.shake, 8); }
+
+      const reach = heavy ? C.heavyReach : C.lightReach;
+      const half = heavy ? C.heavyHalf : C.lightHalf;
+      const base = heavy ? C.heavyDmg : C.lightDmg;
+
+      /* the pair's heavy is a spin: it cuts twice, once per blade */
+      const cuts = (heavy && C.id === 'pair') ? 2 : 1;
+      for (let ci = 0; ci < cuts; ci++) {
+        const cs = wStart + (wEnd - wStart) * (ci / cuts);
+        const ce = cuts === 1 ? wEnd : wStart + (wEnd - wStart) * ((ci + 0.7) / cuts);
+        if (!a.charging && et >= cs && et <= ce && !a['hit' + ci]) {
+          const d = dist(P.x, P.y, B.x, B.y);
+          if (d < reach + B.r && Math.abs(angDiff(a.face, Math.atan2(B.y - P.y, B.x - P.x))) < half + Math.asin(clamp(B.r / Math.max(d, B.r), 0, 1))) {
+            a['hit' + ci] = true; a.hitDone = true;
+            damageBoss(Math.round(base / cuts * power));
+            if (heavy && full) {
+              // the charged smash does not chip his poise, it ends it
+              breakPoise();
+              G.hitstop = Math.max(G.hitstop, 0.14); G.shake = Math.max(G.shake, 12);
+              rumble(300, 0.8, 0.9);
+              spawnParticles(B.x, B.y, 24, '#dceaff', 300, 0.6);
+            }
+          }
+        }
+        if (!a.charging && et > ce && !a['hit' + ci] && !a['whiff' + ci]) {
+          a['whiff' + ci] = true;
+          if (ci === cuts - 1 && !a.hitDone) sfx.whiff(heavy, C.id === 'pair');
+        }
+        // the whoosh lands with the arc, not with the button press
+        if (!a.charging && et >= cs && !a['sl' + ci]) {
+          a['sl' + ci] = true;
+          sfx.swing(heavy, C.id === 'pair');
+          const col = C.id === 'pair' ? '#e8ddc8' : '#dfe6f2';
+          addSlash(P.x, P.y, a.face + (ci ? 0.5 : -0.2) * (cuts > 1 ? 1 : 0), reach, half * (C.id === 'pair' ? 0.8 : 1.05), col, C.id === 'pair' ? 0.11 : 0.18);
         }
       }
-      // the whoosh lands with the arc, not with the button press
-      if (!a.charging && a.t >= wStart && !a.slashed) {
-        a.slashed = true;
-        sfx.swing(heavy);
-        addSlash(P.x, P.y, a.face, heavy ? 94 : 80, heavy ? 1.3 : 1.1, '#dfe6f2', 0.16);
-      }
-      // the window closed on nothing — the blade says so
-      if (!a.charging && a.t > wEnd && !a.hitDone && !a.whiffed) { a.whiffed = true; sfx.whiff(heavy); }
-      if (!a.charging && a.t >= a.dur) P.act = null;
-    } else if (a.type === 'lunge') {
-      // out of a roll or sprint: a fast forward-lunging cut
-      speedMul = 0;
-      const k = a.t / a.dur;
-      if (a.t < 0.18) { P.x += Math.cos(a.face) * 300 * (1 - k) * dt; P.y += Math.sin(a.face) * 300 * (1 - k) * dt; }
-      if (!a.hitDone && a.t >= 0.08 && a.t <= 0.22) {
-        const d = dist(P.x, P.y, B.x, B.y);
-        if (d < 88 + B.r && Math.abs(angDiff(a.face, Math.atan2(B.y - P.y, B.x - P.x))) < 0.9 + Math.asin(clamp(B.r / Math.max(d, B.r), 0, 1))) {
-          a.hitDone = true;
-          damageBoss(26);
-        }
-      }
-      if (a.t >= 0.08 && !a.slashed) { a.slashed = true; sfx.swing(false); addSlash(P.x, P.y, a.face, 88, 0.8, '#dfe6f2', 0.14); }
-      if (a.t > 0.22 && !a.hitDone && !a.whiffed) { a.whiffed = true; sfx.whiff(false); }
-      if (a.t >= a.dur) P.act = null;
-    } else if (a.type === 'riposte') {
-      // the parry's true payoff: a step-in critical stab
-      speedMul = 0;
-      if (a.t < 0.12) { P.x += Math.cos(a.face) * 260 * dt; P.y += Math.sin(a.face) * 260 * dt; }
-      if (!a.hitDone && a.t >= 0.16) {
-        a.hitDone = true;
-        damageBoss(70);
-        sfx.stab();
-        G.hitstop = Math.max(G.hitstop, 0.13);
-        G.shake = Math.max(G.shake, 10);
-        rumble(220, 0.7, 0.9);
-        const hx = B.x - Math.cos(a.face) * B.r * 0.5, hy = B.y - Math.sin(a.face) * B.r * 0.5;
-        spawnParticles(hx, hy, 26, '#ffe9a8', 280, 0.6);
-        spawnParticles(hx, hy, 10, '#f2f6ff', 340, 0.35);
-        // driven back off the blade
-        if (B.state === 'recoil') {
-          B.stateT = Math.min(B.stateT, 0.15);
-          B.x += Math.cos(a.face) * 20; B.y += Math.sin(a.face) * 20;
-          B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
-          B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
-        }
-      }
-      if (a.t >= a.dur) P.act = null;
+      if (!a.charging && a.t >= a.dur + held) P.act = null;
     } else if (a.type === 'parry') {
       speedMul = 0;
-      if (a.t >= a.dur) {
-        if (!a.success) P.parryStreak = 0;   // a whiffed parry breaks the streak
-        P.act = null;
+      if (a.t >= a.dur) P.act = null;
+    } else if (a.type === 'special') {
+      speedMul = 0;
+      if (CH().id === 'pair') {
+        /* she goes THROUGH him — eight stabs, alternating hands, and out */
+        if (a.t < 0.3) { P.x += Math.cos(a.face) * 300 * dt; P.y += Math.sin(a.face) * 300 * dt; }
+        const due = Math.min(8, Math.floor((a.t - 0.08) / 0.065) + 1);
+        while (a.stabs < due && a.t >= 0.08) {
+          a.stabs++;
+          const last = a.stabs === 8;
+          damageBoss(last ? 19 : 13, true);             // 7×13 + 19 = 110
+          G.hitstop = Math.max(G.hitstop, last ? 0.09 : 0.018);
+          const hx = B.x + rand(-14, 14), hy = B.y + rand(-14, 14);
+          spawnParticles(hx, hy, last ? 16 : 4, last ? '#ffe9a8' : '#e8ddc8', last ? 300 : 220, last ? 0.5 : 0.25);
+          if (last) { sfx.stab(); rumble(200, 0.7, 0.9); }
+          else if (a.stabs % 2) sfx.swing(false, true);
+          if (B.state === 'recoil') B.stateT = Math.min(B.stateT, 0.15);
+        }
+      } else {
+        /* he steps in and drives the given blade down through the opening */
+        if (a.t < 0.12) { P.x += Math.cos(a.face) * 260 * dt; P.y += Math.sin(a.face) * 260 * dt; }
+        if (!a.hitDone && a.t >= 0.16) {
+          a.hitDone = true;
+          damageBoss(110, true);
+          sfx.stab();
+          G.hitstop = Math.max(G.hitstop, 0.13);
+          G.shake = Math.max(G.shake, 10);
+          rumble(220, 0.7, 0.9);
+          const hx = B.x - Math.cos(a.face) * B.r * 0.5, hy = B.y - Math.sin(a.face) * B.r * 0.5;
+          spawnParticles(hx, hy, 26, '#ffe9a8', 280, 0.6);
+          spawnParticles(hx, hy, 10, '#dceaff', 340, 0.35);
+          if (B.state === 'recoil') {
+            B.stateT = Math.min(B.stateT, 0.15);
+            B.x += Math.cos(a.face) * 20; B.y += Math.sin(a.face) * 20;
+            B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
+            B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
+          }
+        }
       }
+      if (a.t >= a.dur) P.act = null;
     } else if (a.type === 'flask') {
       speedMul = 0.42;
       P.hp = Math.min(P.hpMax, P.hp + 45 * dt / 1.0);
@@ -1658,7 +1690,7 @@ function updatePlayer(dt) {
   /* ---- movement ---- */
   P.speedNow = 0;
   if (speedMul > 0 || !P.act) {
-    const base = sprinting ? 265 : (P.blocking ? 96 : 175);
+    const base = sprinting ? C.speed * 1.5 : (P.blocking ? C.speed * 0.55 : C.speed);
     const sp = base * mag * (P.act ? speedMul : 1);
     P.x += mvX * sp * dt; P.y += mvY * sp * dt;
     P.walkT += sp * dt * 0.05;
@@ -1669,6 +1701,10 @@ function updatePlayer(dt) {
       if ((mvX * ux + mvY * uy) / ul * sp > 70) G.lastAggro = G.time;
     }
   }
+
+  P.blockStun = Math.max(0, P.blockStun - dt);
+  P.chainT = Math.max(0, P.chainT - dt);
+  P.spGauge = Math.min(SP_MAX, P.spGauge + dt);   // the answering blow, slowly owed again      // the chain lapses if you stop swinging
 
   /* ---- stamina regen: delayed, never while sprinting or mid-action ---- */
   P.stDelay = Math.max(0, P.stDelay - dt);
@@ -1708,31 +1744,46 @@ function pickWeighted(pool) {
   for (const p of pool) { r -= p[1]; if (r <= 0) return p[0]; }
   return pool[0][0];
 }
+/* He fights the person in front of him, and he does not fight them the same way.
+   Against the one carrying his own sword he plays the distance and punishes the
+   commitment; against the two knives he stops trying to catch her and simply
+   fills the ground she wants to stand on. Nothing in the game says so out loud. */
 function chooseAttack1(d) {
-  if (d > 280 && Math.random() < 0.75) return 'charge';
+  const pair = CH().id === 'pair';
+  if (!pair && d > 260 && Math.random() < 0.8) return 'charge';
+  if (pair && d > 300 && Math.random() < 0.6) return 'charge';
   return pickWeighted([
-    ['slam', 1.0], ['buried', 0.7], ['spin', 0.9],
-    ['sweep', d < 150 ? 1.2 : 0.35],
-    ['charge', d > 200 ? 0.5 : 0.05]
+    ['slam',   pair ? 1.5 : 0.8],                       // fissures deny the ground she dances on
+    ['buried', pair ? 1.1 : 0.6],
+    ['spin',   pair ? 1.6 : 0.7],                       // she likes being beside him; the spin says no
+    ['sweep',  pair ? (d < 170 ? 1.0 : 0.3) : (d < 150 ? 1.5 : 0.55)],
+    ['charge', pair ? 0.05 : (d > 190 ? 0.9 : 0.15)]
   ]);
 }
 function chooseAttack2(d) {
+  const pair = CH().id === 'pair';
   // out of his reach = you're backpedaling, and the step-through hunts backpedalers
-  if (d > 170 && Math.random() < 0.55) return 'step';
+  if (!pair && d > 160 && Math.random() < 0.65) return 'step';
+  if (pair && d > 200 && Math.random() < 0.4) return 'step';
   return pickWeighted([
     ['thrust', 1.0],
-    ['step', d > 150 ? 1.6 : (d > 110 ? 1.0 : 0.4)],
-    ['feint', 0.8],                      // the hard read stays rare — roughly 1 in 5
-    ['flurry', 0.8],
-    ['rising', 0.6]
+    ['step',   pair ? (d > 170 ? 0.9 : 0.35) : (d > 150 ? 2.0 : 1.1)],
+    ['feint',  pair ? 1.3 : 0.6],                       // she is fast enough to fall for a false start
+    ['flurry', pair ? 1.7 : 0.5],                       // three cuts cover three places at once
+    ['rising', pair ? 0.4 : 1.4]                        // the rising tear catches a slow guard
   ]);
 }
+
+/* how close he wants to stand: right on top of the knives, at arm's length of the sword */
+function preferredGap() { return CH().id === 'pair' ? 0.82 : 1.18; }
 
 function updateBoss(dt) {
   B.flash = Math.max(0, B.flash - dt);
   B.hpGhost = Math.max(B.hp, B.hpGhost - B.hpMax * 0.35 * dt);
   B.poise = Math.max(0, B.poise - 0.85 * dt);
-  B.exposedT = Math.max(0, B.exposedT - dt);
+  // BLEED cools if she stops cutting
+  P.bleedHold = Math.max(0, P.bleedHold - dt);
+  if (B.bleed > 0 && P.bleedHold <= 0) B.bleed = Math.max(0, B.bleed - 11 * dt);
   B.readCd = Math.max(0, B.readCd - dt);
   B.stateT += dt;
 
@@ -1894,18 +1945,6 @@ function updateBoss(dt) {
     return;
   }
 
-  if (B.state === 'recoil') {                // knocked off-balance by a parry
-    B.tele = 0;
-    B.wOff = lerp(B.wOff, -1.45, 7 * dt); B.wLen = lerp(B.wLen, 82, 7 * dt);
-    if (B.stateT < 0.2) {
-      B.x -= Math.cos(B.face) * 55 * dt; B.y -= Math.sin(B.face) * 55 * dt;
-      B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
-      B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
-    }
-    if (B.stateT >= 0.85) { B.state = 'idle'; B.cd = 0.75; }
-    return;
-  }
-
   if (B.state === 'stagger') {
     B.staggerT -= dt;
     B.tele = 0;
@@ -1925,7 +1964,8 @@ function updateBoss(dt) {
       B.wOff = lerp(B.wOff, passive ? 1.05 : 0.5, 4 * dt);
       B.wLen = lerp(B.wLen, 86, 4 * dt);
       B.face = turnToward(B.face, angToP, 3.0 * dt);
-      if (d > (passive ? 250 : 165)) {
+      const gap = preferredGap();
+      if (d > (passive ? 250 : 165) * gap) {
         const sp = d > 300 ? 162 : 112;
         B.x += Math.cos(angToP) * sp * dt; B.y += Math.sin(angToP) * sp * dt;
       } else {
@@ -1944,7 +1984,7 @@ function updateBoss(dt) {
       B.wOff = lerp(B.wOff, 0.35, 5 * dt);   // low stance, blade forward and level
       B.wLen = lerp(B.wLen, 58, 5 * dt);
       B.face = turnToward(B.face, angToP, 4.2 * dt);
-      if (d > 140) {
+      if (d > 140 * preferredGap()) {
         B.x += Math.cos(angToP) * 175 * dt; B.y += Math.sin(angToP) * 175 * dt;
       } else {
         B.strafeT -= dt;
@@ -1966,6 +2006,15 @@ function updateBoss(dt) {
         else { B.chainCount = 1; bossStartAttack(chooseAttack2(d)); }
       }
     }
+  } else if (B.state === 'recoil') {         // knocked off-balance by a parry
+    B.tele = 0;
+    B.wOff = lerp(B.wOff, -1.45, 7 * dt); B.wLen = lerp(B.wLen, 82, 7 * dt);
+    if (B.stateT < 0.2) {
+      B.x -= Math.cos(B.face) * 55 * dt; B.y -= Math.sin(B.face) * 55 * dt;
+      B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
+      B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
+    }
+    if (B.stateT >= 0.85) { B.state = 'idle'; B.cd = 0.75; }
   } else if (B.state === 'attack' && B.atk) {
     const atk = (B.atkSet === 2 ? ATK2 : ATK1)[B.atk];
     const ph = atk.phases[B.phaseIdx];
@@ -2123,34 +2172,13 @@ function update(dt) {
 
   switch (G.screen) {
     case 'title':
-      if (Input.alt) { G.tourney = !G.tourney; sfx.chargeFull(); }
-      if (Input.back) { Board.load(); goto('board'); }
+      if (Input.menuL && G.charIdx > 0) { G.charIdx--; sfx.chime(); }
+      if (Input.menuR && G.charIdx < CHARS.length - 1) { G.charIdx++; sfx.chime(); }
       if (Input.confirm) {
         resetFight();
         sfx.fog();
         goto(G.firstFight ? 'intro' : 'refade');
       }
-      break;
-    case 'entry': {
-      const L = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ .-';
-      if (Input.menuY) {
-        const i = L.indexOf(G.entry[G.entrySlot]);
-        G.entry[G.entrySlot] = L[(i - Input.menuY + L.length) % L.length];
-      }
-      if (Input.menuX) G.entrySlot = clamp(G.entrySlot + Input.menuX, 0, 2);
-      for (const ch of Input.typed) {
-        if (ch === '\b') { G.entry[G.entrySlot] = 'A'; G.entrySlot = Math.max(0, G.entrySlot - 1); }
-        else { G.entry[G.entrySlot] = ch; if (G.entrySlot < 2) G.entrySlot++; }
-      }
-      if (Input.back) { goto('title'); }                       // a practice run, not logged
-      if (Input.confirm && G.screenT > 0.25) {
-        G.lastRank = Board.add(G.entry.join(''), G.runDmg, G.runT, G.runKilled);
-        goto('board');
-      }
-      break;
-    }
-    case 'board':
-      if ((Input.confirm || Input.back) && G.screenT > 0.3) { G.lastRank = -1; goto('title'); }
       break;
     case 'intro': {
       // fog-gate walk-in
@@ -2164,7 +2192,6 @@ function update(dt) {
       if (G.screenT >= 0.45) goto('fight');
       break;
     case 'fight':
-      G.runT += dt * 1000;        // paused time is not counted; the clock is the fight
       updatePlayer(dt);
       updateBoss(dt);
       updateFissures(dt);
@@ -2191,8 +2218,8 @@ function update(dt) {
           rand(-12, 12), rand(-46, -18), 'rgba(196,204,224,0.5)', rand(0.5, 1.2), rand(1.2, 2.4));
       }
       if (G.screenT > 2.1 && Input.confirm) {
-        if (G.tourney) { G.entrySlot = 0; goto('entry'); }
-        else { resetFight(); goto('refade'); }
+        resetFight();
+        goto('refade');
       }
       break;
     }
@@ -2200,8 +2227,8 @@ function update(dt) {
       // no chime — the cry was the sound of this ending
       if (G.screenT > 2.3 && Input.confirm) {
         G.victoryChimed = false;
-        if (G.tourney) { G.entrySlot = 0; goto('entry'); }
-        else { resetFight(); goto('refade'); }
+        resetFight();
+        goto('refade');
       }
       break;
   }
@@ -2449,6 +2476,348 @@ function drawParticles() {
 
 function drawSword(len, white) { drawSwordProfile(ctx, len, { white }); }
 
+/* ---------- the two who come to the threshold ----------
+   They are not palette swaps. One is built out of the sword Aldric handed
+   him; the other is built out of everyone Aldric already killed. */
+
+// a short scavenged blade — chipped, dark, bound with cord at the grip
+function drawShortBlade(len, white) {
+  ctx.fillStyle = white ? '#ffffff' : '#33261f';
+  ctx.fillRect(-6, -1.5, 6, 3);
+  ctx.beginPath(); ctx.arc(-7, 0, 2, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = white ? '#ffffff' : '#5a4436';
+  ctx.fillRect(-1.2, -4.5, 2.4, 9);
+  if (white) ctx.fillStyle = '#ffffff';
+  else {
+    const g = ctx.createLinearGradient(0, -2.6, 0, 2.6);
+    g.addColorStop(0, '#e6e2d6'); g.addColorStop(0.5, '#a9a496'); g.addColorStop(1, '#6d6a60');
+    ctx.fillStyle = g;
+  }
+  ctx.beginPath();
+  ctx.moveTo(1.2, -2.4); ctx.lineTo(len - 5, -2.0); ctx.lineTo(len, 0); ctx.lineTo(len - 6, 1.8); ctx.lineTo(1.2, 2.4);
+  ctx.closePath(); ctx.fill();
+  if (!white) {                       // notches — these blades have been used before
+    ctx.fillStyle = 'rgba(20,18,16,0.55)';
+    ctx.fillRect(len * 0.45, -2.2, 1.2, 1.4);
+    ctx.fillRect(len * 0.7, 0.9, 1, 1.2);
+  }
+}
+
+/* CHARACTER A — THE GIVEN BLADE. Heavy plate, full helm, the sword he was
+   handed. Broad, slow, low to the ground. */
+function drawBladeBody(white) {
+  const flasking = P.act && P.act.type === 'flask';
+  const sprintingNow = P.speedNow > 220;
+  const idleBob = P.speedNow < 5 ? Math.sin(G.time * 2.1) * 0.8 : 0;   // breathing
+  const sway = Math.sin(P.walkT) * 1.4 + idleBob;
+  ctx.translate(0, sway);
+  if (sprintingNow) ctx.rotate(0.08);                                  // the lean
+
+  // cape — flutters harder with speed
+  const flut = 3 + Math.min(6, P.speedNow * 0.02);
+  const cs = Math.sin(G.time * (2.6 + P.speedNow * 0.015) + P.walkT) * flut;
+  const cg = ctx.createLinearGradient(-22, 0, -2, 0);
+  cg.addColorStop(0, '#2d3a63'); cg.addColorStop(1, '#5265a0');
+  ctx.fillStyle = white ? '#ffffff' : cg;
+  ctx.beginPath();
+  ctx.moveTo(-2, -9);
+  ctx.quadraticCurveTo(-15, -8 + cs, -23 - flut * 0.5, -3 + cs);
+  ctx.lineTo(-23 - flut * 0.5, 4 + cs);
+  ctx.quadraticCurveTo(-15, 8 + cs, -2, 9);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = white ? '#ffffff' : '#1a2138';
+  ctx.lineWidth = 1.2; ctx.stroke();
+
+  // sprint speed lines
+  if (sprintingNow) {
+    ctx.strokeStyle = 'rgba(200,212,236,0.3)';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-18 - i * 6, -7 + i * 7);
+      ctx.lineTo(-29 - i * 7, -7 + i * 7);
+      ctx.stroke();
+    }
+  }
+
+  // armored torso
+  const bg = ctx.createRadialGradient(-3, -3, 2, 0, 0, 13);
+  bg.addColorStop(0, '#eef2fa'); bg.addColorStop(0.55, '#b7c1d6'); bg.addColorStop(1, '#7d87a1');
+  ctx.fillStyle = white ? '#ffffff' : bg;
+  ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = white ? '#ffffff' : '#333a4b';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  if (!white) {
+    ctx.strokeStyle = 'rgba(51,58,75,0.55)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(0, 0, 8, -1.2, 1.2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, 4.5, -1.4, 1.4); ctx.stroke();
+  }
+
+  // pauldrons
+  ctx.fillStyle = white ? '#ffffff' : '#98a3ba';
+  ctx.strokeStyle = white ? '#ffffff' : '#333a4b';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(-1, -10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.arc(-1, 10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+  // pointed helm
+  const hg = ctx.createLinearGradient(2, 0, 16, 0);
+  hg.addColorStop(0, '#aab5cc'); hg.addColorStop(1, '#f2f6ff');
+  ctx.fillStyle = white ? '#ffffff' : hg;
+  ctx.beginPath(); ctx.moveTo(19, 0); ctx.lineTo(2, -8.5); ctx.lineTo(6, 0); ctx.lineTo(2, 8.5); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = white ? '#ffffff' : '#252c3c';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+  // glowing visor slit — pale blue, his one warm sign of life
+  if (!white) {
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(GLOW_BLUE, 3, -7, 14, 14);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = COOL;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.moveTo(10, -3.6); ctx.lineTo(14, 0); ctx.lineTo(10, 3.6); ctx.stroke();
+  }
+
+  // sword — held low; swings across on attacks, raised flat when guarding
+  let swordAng = 0.75, swordLen = 30;
+  let trailFrom = null;   // when set, ghost blades sweep behind the cut
+  if (P.act && (P.act.type === 'light' || P.act.type === 'heavy')) {
+    const heavy = P.act.type === 'heavy';
+    const alt = P.act.side || 1;
+    if (heavy && P.act.charging) {
+      // held at the top of the wind-up; trembles as the charge builds
+      const ch = chargeK();
+      swordAng = -1.85 + Math.sin(G.time * (20 + ch * 34)) * 0.05 * ch;
+      swordLen = 36;
+    } else if (heavy) {
+      const k = clamp((P.act.t - (P.act.held || 0)) / (P.act.dur * 0.58), 0, 1);
+      swordAng = lerp(-1.85, 1.15, k * k);       // overhead, driven straight down
+      swordLen = 36 + (P.act.chargeT || 0) * 2.5;
+      if (k > 0.25 && k < 1) trailFrom = { ang: swordAng, step: -0.42, len: swordLen };
+    } else {
+      const k = clamp(P.act.t / (P.act.dur * 0.62), 0, 1);
+      swordAng = lerp(-1.6 * alt, 1.35 * alt, k);
+      swordLen = 32;
+      if (k > 0.25 && k < 1) trailFrom = { ang: swordAng, step: -0.4 * alt, len: swordLen };
+    }
+  } else if (P.act && P.act.type === 'parry') {
+    swordAng = lerp(0.4, -1.7, clamp(P.act.t / 0.2, 0, 1));
+    swordLen = 32;
+  } else if (P.act && P.act.type === 'special') {
+    const k = P.act.t;
+    if (k < 0.16) { swordAng = lerp(-1.9, 0.02, k / 0.16); swordLen = 34; }   // raised high, driven down and in
+    else if (k < 0.4) { swordAng = 0.02; swordLen = 40; }                     // buried to the guard
+    else { swordAng = lerp(0.02, 0.75, (k - 0.4) / 0.26); swordLen = 34; }    // dragged back out
+  } else if (P.blocking) {
+    swordAng = -1.15;
+    swordLen = 32;
+  }
+  // ghost blades trailing the arc
+  if (trailFrom) {
+    for (let i = 1; i <= 3; i++) {
+      ctx.save();
+      ctx.globalAlpha = 0.26 - i * 0.07;
+      ctx.translate(3, 9);
+      ctx.rotate(trailFrom.ang + trailFrom.step * i);
+      drawSword(trailFrom.len, false);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.save();
+  ctx.translate(3, 9);
+  ctx.rotate(swordAng);
+  drawSword(swordLen, white);
+  // the charge gathers pale-blue light along the blade
+  if (P.act && P.act.type === 'heavy' && P.act.charging && P.act.chargeT > 0.05) {
+    const ch = chargeK();
+    ctx.globalAlpha = 0.3 + ch * 0.5;
+    ctx.drawImage(GLOW_BLUE, swordLen - 14, -14, 28 + ch * 16, 28 + ch * 16);
+    ctx.globalAlpha = 1;
+    if (ch >= 1) {
+      ctx.strokeStyle = 'rgba(228,240,255,0.85)';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath(); ctx.moveTo(3, 0); ctx.lineTo(swordLen - 2, 0); ctx.stroke();
+    }
+  }
+  ctx.restore();
+
+  // guard shimmer — a ward of steel across the facing arc
+  if (P.blocking) {
+    ctx.strokeStyle = `rgba(180,200,240,${0.3 + 0.12 * Math.sin(G.time * 6)})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(5, 0, 17, -1.2, 1.2); ctx.stroke();
+  }
+  // the glint of an active parry window
+  if (P.act && P.act.type === 'parry' && P.act.t <= 0.2) {
+    ctx.strokeStyle = 'rgba(255,244,214,0.75)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(4, 0, 20, -1.5, 0.6); ctx.stroke();
+  }
+
+  if (flasking) drawFlaskSip();
+}
+
+/* CHARACTER B — THE SCAVENGED PAIR. Lighter, hooded, crouched forward over
+   two dead men's knives. Nothing she wears matches. */
+function drawPairBody(white) {
+  const flasking = P.act && P.act.type === 'flask';
+  const sprintingNow = P.speedNow > 240;
+  const idleBob = P.speedNow < 5 ? Math.sin(G.time * 2.6) * 0.6 : 0;
+  const sway = Math.sin(P.walkT * 1.25) * 1.9 + idleBob;
+  ctx.translate(0, sway);
+  ctx.rotate(sprintingNow ? 0.14 : 0.05);          // always leaning into it
+
+  const a = P.act;
+  const spinning = a && a.type === 'heavy';
+  if (spinning) {
+    const k = clamp(a.t / a.dur, 0, 1);
+    ctx.rotate(k * Math.PI * 2.0);                 // the whole body carries the cut around
+  }
+
+  // torn short cloak — ragged hem, cut down to nothing at the knees
+  const flut = 4 + Math.min(9, P.speedNow * 0.03);
+  const cs = Math.sin(G.time * (3.4 + P.speedNow * 0.02) + P.walkT) * flut;
+  ctx.fillStyle = white ? '#ffffff' : '#4a3630';
+  ctx.beginPath();
+  ctx.moveTo(-1, -8);
+  ctx.quadraticCurveTo(-10, -8 + cs * 0.6, -16 - flut * 0.4, -4 + cs);
+  ctx.lineTo(-13 - flut * 0.4, -1 + cs);           // torn
+  ctx.lineTo(-17 - flut * 0.4, 1 + cs);
+  ctx.lineTo(-12 - flut * 0.4, 3 + cs);
+  ctx.quadraticCurveTo(-10, 7 + cs * 0.6, -1, 8);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = white ? '#ffffff' : '#241a17';
+  ctx.lineWidth = 1; ctx.stroke();
+
+  if (sprintingNow || spinning) {
+    ctx.strokeStyle = 'rgba(216,101,78,0.28)';
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-14 - i * 5, -6 + i * 6);
+      ctx.lineTo(-24 - i * 6, -6 + i * 6);
+      ctx.stroke();
+    }
+  }
+
+  // narrow torso — leather over mismatched scraps of other people's armour
+  const bg = ctx.createRadialGradient(-2, -2, 1.5, 0, 0, 11);
+  bg.addColorStop(0, '#8d8377'); bg.addColorStop(0.55, '#5f574d'); bg.addColorStop(1, '#3a342e');
+  ctx.fillStyle = white ? '#ffffff' : bg;
+  ctx.beginPath(); ctx.ellipse(0, 0, 10, 8.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = white ? '#ffffff' : '#221d19';
+  ctx.lineWidth = 1.3; ctx.stroke();
+  if (!white) {
+    // one looted pauldron on the left, a strapped bracer on the right — nothing matches
+    ctx.fillStyle = '#9aa0a8'; ctx.strokeStyle = '#221d19'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(-1, -8.5, 4.6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#6b5442';
+    ctx.beginPath(); ctx.arc(0, 8.5, 3.2, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // bone-white cord across the chest
+    ctx.strokeStyle = 'rgba(224,216,198,0.6)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(-5, -7); ctx.lineTo(4, 6); ctx.stroke();
+  }
+
+  // hood — a soft cowl, the face inside it left dark
+  ctx.fillStyle = white ? '#ffffff' : '#4a3630';
+  ctx.beginPath();
+  ctx.moveTo(13, 0);
+  ctx.quadraticCurveTo(9, -9.5, -2, -7.5);
+  ctx.quadraticCurveTo(-6, 0, -2, 7.5);
+  ctx.quadraticCurveTo(9, 9.5, 13, 0);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = white ? '#ffffff' : '#241a17';
+  ctx.lineWidth = 1.1; ctx.stroke();
+  if (!white) {
+    ctx.fillStyle = '#100d0c';                      // the shadow under the hood
+    ctx.beginPath(); ctx.ellipse(7.5, 0, 4.6, 4.4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(GLOW_RED, 4, -6, 12, 12);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(226,124,100,0.85)';       // two dull points, no face
+    ctx.beginPath(); ctx.arc(8.6, -1.7, 0.95, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(8.6, 1.7, 0.95, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // TWO blades. Whichever hand is cutting sweeps; the other stays low and ready.
+  let angR = 0.95, angL = -0.95, lenR = 22, lenL = 22;
+  let trailSide = 0, trailAng = 0;
+  if (a && a.type === 'light') {
+    const k = clamp(a.t / (a.dur * 0.66), 0, 1);
+    const sw = lerp(-1.5, 1.25, k);
+    if ((a.side || 1) > 0) { angR = sw; lenR = 24; trailSide = 1; trailAng = sw; }
+    else { angL = -sw; lenL = 24; trailSide = -1; trailAng = -sw; }
+  } else if (spinning) {
+    angR = 0.05; angL = -0.05; lenR = lenL = 25;     // both arms flung out, cutting a full circle
+  } else if (a && a.type === 'parry') {
+    const k = clamp(a.t / 0.2, 0, 1);
+    angR = lerp(0.95, -0.35, k); angL = lerp(-0.95, 0.35, k);   // crossed high, edge out
+    lenR = lenL = 23;
+  } else if (a && a.type === 'special') {
+    const st = a.stabs || 0;
+    angR = (st % 2 === 0) ? 0.06 : 0.75;                        // whichever hand is in him
+    angL = (st % 2 === 1) ? -0.06 : -0.75;
+    lenR = lenL = 26;
+  } else if (a && a.type === 'roll') {
+    angR = 1.5; angL = -1.5;
+  }
+
+  // the glint of an active parry window — both edges catch the light
+  if (a && a.type === 'parry' && a.t <= 0.2) {
+    ctx.strokeStyle = 'rgba(255,244,214,0.7)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(3, 0, 17, -1.4, 0.5); ctx.stroke();
+  }
+  // thin sharp trails — a line, not a fan
+  if (trailSide !== 0) {
+    for (let i = 1; i <= 4; i++) {
+      ctx.save();
+      ctx.globalAlpha = 0.3 - i * 0.06;
+      ctx.translate(2, trailSide * 8);
+      ctx.rotate(trailAng - trailSide * 0.26 * i);
+      ctx.strokeStyle = '#e8ddc8';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath(); ctx.moveTo(3, 0); ctx.lineTo(trailSide > 0 ? 24 : 24, 0); ctx.stroke();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+  if (spinning) {
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.strokeStyle = '#e8ddc8';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.arc(0, 0, 26, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.save(); ctx.translate(2, 8); ctx.rotate(angR); drawShortBlade(lenR, white); ctx.restore();
+  ctx.save(); ctx.translate(2, -8); ctx.rotate(angL); drawShortBlade(lenL, white); ctx.restore();
+
+  if (flasking) drawFlaskSip();
+}
+
+function drawFlaskSip() {
+  ctx.globalAlpha = 0.7;
+  ctx.drawImage(GLOW_GOLD, -12, -25, 20, 20);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#e7bf45';
+  ctx.beginPath(); ctx.arc(-2, -15, 4.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#8a6a1d';
+  ctx.fillRect(-3.6, -22.5, 3.2, 4);
+  if (Math.random() < 0.35) spawnDrift(P.x, P.y - 14, rand(-8, 8), rand(-40, -20), '#ffe08a', 0.5, 2);
+}
+
+// how full the held charge is, 0..1
+function chargeK() {
+  const m = CH().chargeMax || 1;
+  return clamp((P.act && P.act.chargeT || 0) / m, 0, 1);
+}
+
 function drawPlayer() {
   if (P.dead) {
     /* He goes down in stages: the legs give, he pitches onto the stone,
@@ -2564,14 +2933,14 @@ function drawPlayer() {
     ctx.globalAlpha = clamp(t.a, 0, 1) * 0.3;
     ctx.translate(t.x, t.y);
     ctx.rotate(t.rot);
-    ctx.fillStyle = '#9fb2d4';
-    ctx.beginPath(); ctx.ellipse(0, 0, 15, 9, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = CH().id === 'pair' ? '#9c7a6a' : '#9fb2d4';
+    ctx.beginPath(); ctx.ellipse(0, 0, CH().id === 'pair' ? 13 : 15, 8, 0, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 
-  // the scarf — trailing off the shoulder, pale blue
+  // the trailing mark off the shoulder — his pale scarf, or her frayed red cord
   if (P.scarf.length) {
-    ctx.strokeStyle = COOL;
+    ctx.strokeStyle = CH().accent;
     ctx.lineCap = 'round';
     for (let i = 0; i < P.scarf.length - 1; i++) {
       ctx.globalAlpha = 0.7 * (1 - i / P.scarf.length);
@@ -2597,10 +2966,11 @@ function drawPlayer() {
 
   if (rolling) {
     const k = P.act.t / P.act.dur;
-    const rx = 16 + 5 * Math.sin(k * Math.PI);
-    ctx.fillStyle = white ? '#ffffff' : '#c7d1e4';
-    ctx.beginPath(); ctx.ellipse(0, 0, rx, 9.5, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = white ? '#ffffff' : '#3a4152';
+    const pairNow = CH().id === 'pair';
+    const rx = (pairNow ? 13 : 16) + 5 * Math.sin(k * Math.PI);
+    ctx.fillStyle = white ? '#ffffff' : (pairNow ? '#6b5a4c' : '#c7d1e4');
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, pairNow ? 8 : 9.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = white ? '#ffffff' : (pairNow ? '#2a221d' : '#3a4152');
     ctx.lineWidth = 1.8;
     ctx.stroke();
     ctx.strokeStyle = white ? '#ffffff' : 'rgba(58,65,82,0.8)';
@@ -2610,167 +2980,7 @@ function drawPlayer() {
       ctx.beginPath(); ctx.arc(0, 0, 6.5, a0, a0 + 1.1); ctx.stroke();
     }
   } else {
-    const sprintingNow = P.speedNow > 220;
-    const idleBob = P.speedNow < 5 ? Math.sin(G.time * 2.1) * 0.8 : 0;   // breathing
-    const sway = Math.sin(P.walkT) * 1.4 + idleBob;
-    ctx.translate(0, sway);
-    if (sprintingNow) ctx.rotate(0.08);                                  // the lean
-
-    // cape — flutters harder with speed
-    const flut = 3 + Math.min(6, P.speedNow * 0.02);
-    const cs = Math.sin(G.time * (2.6 + P.speedNow * 0.015) + P.walkT) * flut;
-    const cg = ctx.createLinearGradient(-22, 0, -2, 0);
-    cg.addColorStop(0, '#2d3a63'); cg.addColorStop(1, '#5265a0');
-    ctx.fillStyle = white ? '#ffffff' : cg;
-    ctx.beginPath();
-    ctx.moveTo(-2, -9);
-    ctx.quadraticCurveTo(-15, -8 + cs, -23 - flut * 0.5, -3 + cs);
-    ctx.lineTo(-23 - flut * 0.5, 4 + cs);
-    ctx.quadraticCurveTo(-15, 8 + cs, -2, 9);
-    ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = white ? '#ffffff' : '#1a2138';
-    ctx.lineWidth = 1.2; ctx.stroke();
-
-    // sprint speed lines
-    if (sprintingNow) {
-      ctx.strokeStyle = 'rgba(200,212,236,0.3)';
-      ctx.lineWidth = 1.5;
-      for (let i = 0; i < 3; i++) {
-        ctx.beginPath();
-        ctx.moveTo(-18 - i * 6, -7 + i * 7);
-        ctx.lineTo(-29 - i * 7, -7 + i * 7);
-        ctx.stroke();
-      }
-    }
-
-    // armored torso
-    const bg = ctx.createRadialGradient(-3, -3, 2, 0, 0, 13);
-    bg.addColorStop(0, '#eef2fa'); bg.addColorStop(0.55, '#b7c1d6'); bg.addColorStop(1, '#7d87a1');
-    ctx.fillStyle = white ? '#ffffff' : bg;
-    ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = white ? '#ffffff' : '#333a4b';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    if (!white) {
-      ctx.strokeStyle = 'rgba(51,58,75,0.55)';
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(0, 0, 8, -1.2, 1.2); ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, 4.5, -1.4, 1.4); ctx.stroke();
-    }
-
-    // pauldrons
-    ctx.fillStyle = white ? '#ffffff' : '#98a3ba';
-    ctx.strokeStyle = white ? '#ffffff' : '#333a4b';
-    ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.arc(-1, -10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.arc(-1, 10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-
-    // pointed helm
-    const hg = ctx.createLinearGradient(2, 0, 16, 0);
-    hg.addColorStop(0, '#aab5cc'); hg.addColorStop(1, '#f2f6ff');
-    ctx.fillStyle = white ? '#ffffff' : hg;
-    ctx.beginPath(); ctx.moveTo(19, 0); ctx.lineTo(2, -8.5); ctx.lineTo(6, 0); ctx.lineTo(2, 8.5); ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = white ? '#ffffff' : '#252c3c';
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-    // glowing visor slit — pale blue, his one warm sign of life
-    if (!white) {
-      ctx.globalAlpha = 0.55;
-      ctx.drawImage(GLOW_BLUE, 3, -7, 14, 14);
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = COOL;
-      ctx.lineWidth = 1.8;
-      ctx.beginPath(); ctx.moveTo(10, -3.6); ctx.lineTo(14, 0); ctx.lineTo(10, 3.6); ctx.stroke();
-    }
-
-    // sword — held low; swings across on attacks, raised flat when guarding
-    let swordAng = 0.75, swordLen = 30;
-    let trailFrom = null;   // when set, ghost blades sweep behind the cut
-    if (P.act && (P.act.type === 'light' || P.act.type === 'heavy')) {
-      const heavy = P.act.type === 'heavy';
-      const alt = P.act.alt || 1;
-      if (heavy && P.act.charging) {
-        // held at the top of the wind-up; trembles as the charge builds
-        const ch = P.act.chargeT || 0;
-        swordAng = -1.7 * alt + Math.sin(G.time * (20 + ch * 30)) * 0.03 * ch;
-        swordLen = 36;
-      } else {
-        const wEnd = heavy ? 0.5 : 0.27;
-        const k = clamp(P.act.t / wEnd, 0, 1);
-        swordAng = lerp(-1.6 * alt, 1.3 * alt, k);
-        swordLen = heavy ? 36 : 32;
-        if (k > 0.3 && k < 1) trailFrom = { ang: swordAng, step: -0.38 * alt, len: swordLen };
-      }
-    } else if (P.act && P.act.type === 'lunge') {
-      const k = clamp(P.act.t / 0.22, 0, 1);
-      swordAng = lerp(-0.9, 0.05, k);          // whips forward into a thrust
-      swordLen = 36;
-      if (k > 0.4 && k < 1) trailFrom = { ang: swordAng, step: -0.3, len: 36 };
-    } else if (P.act && P.act.type === 'riposte') {
-      const k = P.act.t;
-      if (k < 0.16) { swordAng = lerp(-1.9, 0.02, k / 0.16); swordLen = 34; }   // raised high, driven down and in
-      else if (k < 0.4) { swordAng = 0.02; swordLen = 40; }                     // buried to the guard
-      else { swordAng = lerp(0.02, 0.75, (k - 0.4) / 0.26); swordLen = 34; }    // dragged back out
-    } else if (P.act && P.act.type === 'parry') {
-      swordAng = lerp(0.4, -1.7, clamp(P.act.t / 0.2, 0, 1));
-      swordLen = 32;
-    } else if (P.blocking) {
-      swordAng = -1.15;
-      swordLen = 32;
-    }
-    // ghost blades trailing the arc
-    if (trailFrom) {
-      for (let i = 1; i <= 3; i++) {
-        ctx.save();
-        ctx.globalAlpha = 0.26 - i * 0.07;
-        ctx.translate(3, 9);
-        ctx.rotate(trailFrom.ang + trailFrom.step * i);
-        drawSword(trailFrom.len, false);
-        ctx.restore();
-      }
-      ctx.globalAlpha = 1;
-    }
-    ctx.save();
-    ctx.translate(3, 9);
-    ctx.rotate(swordAng);
-    drawSword(swordLen, white);
-    // the charge gathers pale-blue light along the blade
-    if (P.act && P.act.type === 'heavy' && P.act.charging && P.act.chargeT > 0.05) {
-      const ch = P.act.chargeT / 0.8;
-      ctx.globalAlpha = 0.35 + ch * 0.45;
-      ctx.drawImage(GLOW_BLUE, swordLen - 12, -12, 24 + ch * 10, 24 + ch * 10);
-      ctx.globalAlpha = 1;
-      if (ch >= 1) {
-        ctx.strokeStyle = 'rgba(220,235,255,0.8)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.moveTo(3, 0); ctx.lineTo(swordLen - 2, 0); ctx.stroke();
-      }
-    }
-    ctx.restore();
-
-    // guard shimmer — a ward of steel across the facing arc
-    if (P.blocking) {
-      ctx.strokeStyle = `rgba(180,200,240,${0.3 + 0.12 * Math.sin(G.time * 6)})`;
-      ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(5, 0, 17, -1.2, 1.2); ctx.stroke();
-    }
-    // the glint of an active parry window
-    if (P.act && P.act.type === 'parry' && P.act.t <= 0.2) {
-      ctx.strokeStyle = 'rgba(255,244,214,0.75)';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.arc(4, 0, 20, -1.5, 0.6); ctx.stroke();
-    }
-
-    if (flasking) {
-      ctx.globalAlpha = 0.7;
-      ctx.drawImage(GLOW_GOLD, -12, -25, 20, 20);
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#e7bf45';
-      ctx.beginPath(); ctx.arc(-2, -15, 4.5, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#8a6a1d';
-      ctx.fillRect(-3.6, -22.5, 3.2, 4);
-      if (Math.random() < 0.35) spawnDrift(P.x, P.y - 14, rand(-8, 8), rand(-40, -20), '#ffe08a', 0.5, 2);
-    }
+    if (CH().id === 'pair') drawPairBody(white); else drawBladeBody(white);
   }
   ctx.restore();
 
@@ -3066,10 +3276,10 @@ function drawBoss() {
     ctx.closePath(); ctx.stroke();
     ctx.globalAlpha = alpha;
   }
-  // EXPOSED — five parries stripped his guard; gold shimmer
-  if (B.exposedT > 0 && !white) {
-    ctx.globalAlpha = alpha * (0.45 + 0.3 * Math.sin(G.time * 8));
-    ctx.strokeStyle = '#e8c15a';
+  // BLEEDING — the scavenged cuts are adding up; a dull red seam
+  if (B.bleed > B.bleedMax * 0.45 && !white) {
+    ctx.globalAlpha = alpha * (B.bleed / B.bleedMax) * (0.4 + 0.28 * Math.sin(G.time * 8));
+    ctx.strokeStyle = '#c0392b';
     ctx.lineWidth = 2.2;
     ctx.beginPath();
     ctx.moveTo(30, 0); ctx.lineTo(18, -24); ctx.lineTo(-16, -31);
@@ -3100,18 +3310,6 @@ function drawBoss() {
     ctx.restore();
   }
 
-  // reeling from a parry — a gold glint marks the opening for the riposte
-  if (B.state === 'recoil') {
-    const pu = 0.6 + 0.4 * Math.sin(G.time * 11);
-    ctx.save();
-    ctx.globalAlpha = alpha * pu;
-    ctx.drawImage(GLOW_GOLD, B.x - 14, B.y - 14, 28, 28);
-    ctx.translate(B.x, B.y - B.r - 18);
-    ctx.rotate(Math.PI / 4);
-    ctx.fillStyle = '#ffe9a8';
-    ctx.fillRect(-3.5, -3.5, 7, 7);
-    ctx.restore();
-  }
 
   // stagger — "STANCE BROKEN" cue, drawn unrotated so it stays readable
   if (stag) {
@@ -3154,14 +3352,27 @@ function drawBoss() {
     ctx.restore();
   }
 
-  // EXPOSED floating cue
-  if (B.exposedT > 0 && !stag && !dying && !carving) {
+  // reeling from a parry — a gold glint marks the opening
+  if (B.state === 'recoil' && !dying && !carving) {
+    const pu = 0.6 + 0.4 * Math.sin(G.time * 11);
     ctx.save();
-    ctx.globalAlpha = alpha * (0.55 + 0.45 * Math.sin(G.time * 7));
+    ctx.globalAlpha = alpha * pu;
+    ctx.drawImage(GLOW_GOLD, B.x - 14, B.y - 14, 28, 28);
+    ctx.translate(B.x, B.y - B.r - 18);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = '#ffe9a8';
+    ctx.fillRect(-3.5, -3.5, 7, 7);
+    ctx.restore();
+  }
+
+  // BLEEDING floating cue — only once he is close to opening up
+  if (B.bleed > B.bleedMax * 0.7 && !stag && !dying && !carving) {
+    ctx.save();
+    ctx.globalAlpha = alpha * (0.5 + 0.4 * Math.sin(G.time * 7));
     ctx.textAlign = 'center';
-    ctx.fillStyle = '#e8c15a';
+    ctx.fillStyle = '#d8654e';
     ctx.font = '600 13px Georgia, serif';
-    ctx.fillText('EXPOSED', B.x, B.y - B.r - 34);
+    ctx.fillText('BLEEDING', B.x, B.y - B.r - 34);
     ctx.textAlign = 'left';
     ctx.restore();
   }
@@ -3248,14 +3459,34 @@ function drawHUD() {
   const stCol = P.stFlash > 0 ? '#e2c14a' : (stLow ? '#7c8f3a' : '#3f9e4d');
   drawBar(26, 48, 214, 11, Math.max(0, P.st) / P.stMax, stCol, P.stFlash > 0 ? '#b89a2c' : '#2c7538');
 
-  // parry streak pips — five clean parries expose him
-  for (let i = 0; i < 5; i++) {
-    ctx.save();
-    ctx.translate(252 + i * 14, 53.5);
-    ctx.rotate(Math.PI / 4);
-    if (i < P.parryStreak) { ctx.fillStyle = '#ffe9a8'; ctx.fillRect(-3.2, -3.2, 6.4, 6.4); }
-    else { ctx.strokeStyle = 'rgba(200,208,226,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(-3, -3, 6, 6); }
-    ctx.restore();
+  // the answering blow — a slow gold seam; lit means a parry buys more than breath
+  {
+    const k = clamp(P.spGauge / SP_MAX, 0, 1);
+    const full = k >= 1;
+    ctx.fillStyle = 'rgba(6,7,11,0.8)';
+    ctx.fillRect(26, 62, 150, 3);
+    ctx.fillStyle = full ? `rgba(255,233,168,${0.8 + 0.2 * Math.sin(G.time * 5)})` : 'rgba(148,120,58,0.8)';
+    ctx.fillRect(26, 62, 150 * k, 3);
+    if (full) {
+      ctx.save();
+      ctx.translate(182, 63.5); ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = '#ffe9a8'; ctx.fillRect(-2.8, -2.8, 5.6, 5.6);
+      ctx.restore();
+    }
+  }
+
+  // chain pips — how far into the string you are, in the character's own colour
+  {
+    const CC = CH(), n = CC.lightChain;
+    const lit = P.chainT > 0 ? (P.chain % n) + 1 : 0;
+    for (let i = 0; i < n; i++) {
+      ctx.save();
+      ctx.translate(252 + i * 13, 53.5);
+      ctx.rotate(Math.PI / 4);
+      if (i < lit) { ctx.fillStyle = CC.accent; ctx.fillRect(-3.2, -3.2, 6.4, 6.4); }
+      else { ctx.strokeStyle = 'rgba(200,208,226,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(-3, -3, 6, 6); }
+      ctx.restore();
+    }
   }
 
   // flasks
@@ -3299,12 +3530,13 @@ function drawHUD() {
       ctx.fillStyle = 'rgba(255,233,168,0.85)';
       ctx.fillRect(px, by + 15, pw * clamp(B.poise / 6, 0, 1), 3);
     }
-    if (B.exposedT > 0) {
-      const ew = bw * 0.4, ex = W / 2 - ew / 2;
-      ctx.fillStyle = 'rgba(6,7,11,0.8)';
-      ctx.fillRect(ex, by + 20, ew, 3);
-      ctx.fillStyle = 'rgba(232,193,90,0.9)';
-      ctx.fillRect(ex, by + 20, ew * (B.exposedT / 10), 3);
+    // the bleed seam — a thin red accent under his health, the pair's only pressure
+    if (CH().bleed) {
+      ctx.fillStyle = 'rgba(52,26,22,0.85)';
+      ctx.fillRect(bx, by + 13, bw, 2.5);
+      const k = clamp(B.bleed / B.bleedMax, 0, 1);
+      ctx.fillStyle = k > 0.7 ? `rgba(232,101,78,${0.75 + 0.25 * Math.sin(G.time * 9)})` : 'rgba(160,44,36,0.9)';
+      ctx.fillRect(bx, by + 13, bw * k, 2.5);
     }
     ctx.textAlign = 'left';
   }
@@ -3332,36 +3564,110 @@ function drawControls(y) {
     ['Lock-on', 'R3', 'Q'],
     ['Flask', 'X', 'E'],
     ['Pause', 'Start', 'Esc'],
-    ['Confirm', 'A / Start', 'Enter']
+    ['Confirm', 'A / Start', 'Enter'],
+    ['Choose', 'Stick / D-pad', 'A   D']
   ];
-  const colL = W / 2 - 130, colPad = W / 2, colKb = W / 2 + 160;
+  const col = pad ? 1 : 2;
 
   ctx.textAlign = 'center';
-  ctx.font = '600 12px Georgia, serif';
-  ctx.fillStyle = pad ? ACCENT : 'rgba(150,150,160,0.5)';
-  ctx.fillText('CONTROLLER', colPad, y - 14);
-  ctx.fillStyle = !pad ? ACCENT : 'rgba(150,150,160,0.5)';
-  ctx.fillText('KEYBOARD', colKb, y - 14);
-
-  ctx.strokeStyle = 'rgba(148,138,116,0.25)';
+  ctx.font = '600 11px Georgia, serif';
+  ctx.fillStyle = 'rgba(201,163,74,0.75)';
+  ctx.fillText(pad ? 'CONTROLLER' : 'KEYBOARD', W / 2, y - 12);
+  ctx.strokeStyle = 'rgba(148,138,116,0.22)';
   ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(W / 2 - 235, y - 7); ctx.lineTo(W / 2 + 235, y - 7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(W / 2 - 250, y - 5); ctx.lineTo(W / 2 + 250, y - 5); ctx.stroke();
 
+  const half = Math.ceil(rows.length / 2);
   rows.forEach((r, i) => {
-    const ry = y + 8 + i * 18;
+    const g = i < half ? 0 : 1;
+    const cx = g === 0 ? W / 2 - 118 : W / 2 + 148;
+    const ry = y + 10 + (i - g * half) * 17;
     ctx.textAlign = 'right';
-    ctx.font = '12.5px Georgia, serif';
-    ctx.fillStyle = 'rgba(214,207,194,0.72)';
-    ctx.fillText(r[0], colL, ry);
-    ctx.textAlign = 'center';
-    ctx.font = (pad ? '600 ' : '') + '12.5px Georgia, serif';
-    ctx.fillStyle = pad ? '#e8e2d0' : 'rgba(150,150,160,0.45)';
-    ctx.fillText(r[1], colPad, ry);
-    ctx.font = (!pad ? '600 ' : '') + '12.5px Georgia, serif';
-    ctx.fillStyle = !pad ? '#e8e2d0' : 'rgba(150,150,160,0.45)';
-    ctx.fillText(r[2], colKb, ry);
+    ctx.font = '12px Georgia, serif';
+    ctx.fillStyle = 'rgba(214,207,194,0.6)';
+    ctx.fillText(r[0], cx, ry);
+    ctx.textAlign = 'left';
+    ctx.font = '600 12px Georgia, serif';
+    ctx.fillStyle = 'rgba(232,226,208,0.9)';
+    ctx.fillText(r[col], cx + 12, ry);
   });
   ctx.textAlign = 'left';
+}
+
+/* ---------- who walks through the fog ----------
+   Two people answered the same summons. Neither is a better version of the
+   other; they are simply not the same problem for Aldric to solve. */
+function drawCharSelect(y) {
+  for (let i = 0; i < CHARS.length; i++) {
+    const c = CHARS[i];
+    const sel = i === G.charIdx;
+    const cx = W / 2 + (i === 0 ? -180 : 180);
+    const cw = 300, chh = 168;
+    const x0 = cx - cw / 2;
+
+    ctx.save();
+    ctx.fillStyle = sel ? 'rgba(14,16,22,0.8)' : 'rgba(9,10,14,0.55)';
+    ctx.fillRect(x0, y, cw, chh);
+    ctx.strokeStyle = sel ? c.accent : 'rgba(120,116,106,0.28)';
+    ctx.lineWidth = sel ? 2 : 1;
+    ctx.strokeRect(x0 + 0.5, y + 0.5, cw - 1, chh - 1);
+    if (sel) {
+      ctx.globalAlpha = 0.16 + 0.06 * Math.sin(G.time * 3);
+      ctx.drawImage(c.id === 'pair' ? GLOW_RED : GLOW_BLUE, cx - 110, y + 6, 220, 130);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+
+    // the figure, at the scale you will actually see them
+    ctx.save();
+    ctx.translate(cx, y + 62);
+    ctx.rotate(-Math.PI / 2);         // seen from above, facing up out of the card
+    ctx.scale(2.15, 2.15);
+    ctx.globalAlpha = sel ? 1 : 0.5;
+    if (!sel) {                       // unchosen, they are only a shape in the fog
+      ctx.filter = 'grayscale(1) brightness(0.5)';
+    }
+    if (c.id === 'pair') drawPairBody(false); else drawBladeBody(false);
+    ctx.filter = 'none';
+    ctx.globalAlpha = 1;
+    ctx.restore();
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font = '600 15px Georgia, serif';
+    ctx.fillStyle = sel ? '#f2ece0' : 'rgba(180,174,162,0.45)';
+    drawTracked(c.name, cx, y + 122, 2.5);
+    ctx.font = 'italic 12.5px Georgia, serif';
+    ctx.fillStyle = sel ? 'rgba(214,207,194,0.8)' : 'rgba(160,154,144,0.35)';
+    wrapText(c.line, cx, y + 143, cw - 34, 15);
+    ctx.restore();
+
+    if (sel) {                        // the chevrons point at the one you have
+      ctx.save();
+      const bob = Math.sin(G.time * 4) * 2;
+      ctx.fillStyle = c.accent;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x0 - 12 - bob, y + chh / 2); ctx.lineTo(x0 - 22 - bob, y + chh / 2 - 7);
+      ctx.lineTo(x0 - 22 - bob, y + chh / 2 + 7); ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x0 + cw + 12 + bob, y + chh / 2); ctx.lineTo(x0 + cw + 22 + bob, y + chh / 2 - 7);
+      ctx.lineTo(x0 + cw + 22 + bob, y + chh / 2 + 7); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+  }
+  ctx.textAlign = 'left';
+}
+
+function wrapText(text, cx, y, maxW, lh) {
+  const words = text.split(' ');
+  let line = '', ly = y;
+  for (const w of words) {
+    const t = line ? line + ' ' + w : w;
+    if (ctx.measureText(t).width > maxW && line) { ctx.fillText(line, cx, ly); line = w; ly += lh; }
+    else line = t;
+  }
+  if (line) ctx.fillText(line, cx, ly);
 }
 
 function drawTitle() {
@@ -3396,151 +3702,15 @@ function drawTitle() {
   ctx.fillStyle = 'rgba(214,207,194,0.72)';
   ctx.fillText('a boss duel', W / 2, 136);
 
-  drawControls(206);
+  drawCharSelect(156);
+  drawControls(360);
 
   const blink = 0.55 + 0.45 * Math.sin(G.time * 3);
   ctx.textAlign = 'center';
   ctx.globalAlpha = blink;
   ctx.fillStyle = '#e8e2d0';
-  ctx.font = '600 19px Georgia, serif';
-  ctx.fillText(promptText('confirm') + '  to traverse the fog', W / 2, 452);
-  ctx.globalAlpha = 1;
-
-  // contest affordances, kept quiet unless they are in use
-  const pad = Input.device === 'pad';
-  ctx.font = '13px Georgia, serif';
-  ctx.fillStyle = G.tourney ? ACCENT : 'rgba(150,150,160,0.55)';
-  ctx.fillText((pad ? 'Y' : 'T') + ' — contest mode: ' + (G.tourney ? 'ON' : 'off'), W / 2 - 118, 486);
-  ctx.fillStyle = 'rgba(150,150,160,0.55)';
-  ctx.fillText((pad ? 'B' : 'ESC') + ' — standings' + (Board.rows.length ? ' (' + Board.rows.length + ')' : ''), W / 2 + 118, 486);
-  ctx.textAlign = 'left';
-}
-
-function drawEntry() {
-  drawWorld();
-  ctx.fillStyle = 'rgba(4,5,8,0.86)';
-  ctx.fillRect(0, 0, W, H);
-  const pad = Input.device === 'pad';
-  ctx.textAlign = 'center';
-
-  ctx.font = '600 15px Georgia, serif';
-  ctx.fillStyle = G.runKilled ? '#e8c15a' : '#cfc8ba';
-  drawTracked(G.runKilled ? 'THE GATE IS OPEN' : 'THE GATE HELD', W / 2, 116, 5);
-
-  // what this run was worth
-  ctx.font = '600 34px Georgia, "Times New Roman", serif';
-  ctx.fillStyle = '#e6e0d0';
-  ctx.fillText(Math.round(G.runDmg) + ' damage', W / 2, 176);
-  ctx.font = '20px Georgia, serif';
-  ctx.fillStyle = 'rgba(211,204,189,0.8)';
-  ctx.fillText('in ' + fmtTime(G.runT), W / 2, 208);
-
-  ctx.font = '13px Georgia, serif';
-  ctx.fillStyle = 'rgba(211,204,189,0.6)';
-  ctx.fillText('who fought?', W / 2, 262);
-
-  // three slots, arcade style
-  for (let i = 0; i < 3; i++) {
-    const x = W / 2 + (i - 1) * 74, y = 330;
-    const on = i === G.entrySlot;
-    ctx.fillStyle = on ? 'rgba(255,158,44,0.12)' : 'rgba(255,255,255,0.03)';
-    ctx.fillRect(x - 30, y - 46, 60, 62);
-    ctx.strokeStyle = on ? ACCENT : 'rgba(148,138,116,0.4)';
-    ctx.lineWidth = on ? 2 : 1;
-    ctx.strokeRect(x - 30, y - 46, 60, 62);
-    ctx.fillStyle = '#f2ece0';
-    ctx.font = '600 44px Georgia, "Times New Roman", serif';
-    ctx.fillText(G.entry[i], x, y);
-    if (on) {
-      ctx.fillStyle = ACCENT;
-      ctx.font = '13px Georgia, serif';
-      const bl = 0.4 + 0.6 * Math.abs(Math.sin(G.time * 4));
-      ctx.globalAlpha = bl;
-      ctx.fillText('▲', x, y - 58);
-      ctx.fillText('▼', x, y + 34);
-      ctx.globalAlpha = 1;
-    }
-  }
-
-  ctx.font = '13px Georgia, serif';
-  ctx.fillStyle = 'rgba(211,204,189,0.65)';
-  ctx.fillText(pad ? 'stick or d-pad to letter        A to enter        B to discard'
-                   : 'type three letters, or arrows        ENTER to enter        ESC to discard',
-    W / 2, 424);
-  ctx.textAlign = 'left';
-}
-
-function drawBoard() {
-  drawFloor();
-  drawFogWall();
-  ctx.fillStyle = 'rgba(4,5,8,0.86)';
-  ctx.fillRect(0, 0, W, H);
-  ctx.textAlign = 'center';
-
-  ctx.font = '600 30px Georgia, "Times New Roman", serif';
-  const tg = ctx.createLinearGradient(0, 40, 0, 74);
-  tg.addColorStop(0, '#f2ece0'); tg.addColorStop(1, '#a2916f');
-  ctx.fillStyle = tg;
-  drawTracked('THOSE WHO CAME TO THE GATE', W / 2, 66, 6);
-  ctx.strokeStyle = 'rgba(201,163,74,0.5)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(W / 2 - 300, 82); ctx.lineTo(W / 2 + 300, 82); ctx.stroke();
-
-  const rows = Board.rows;
-  if (!rows.length) {
-    ctx.font = 'italic 17px Georgia, serif';
-    ctx.fillStyle = 'rgba(211,204,189,0.5)';
-    ctx.fillText('no one yet', W / 2, 250);
-  } else {
-    // column headers
-    const L = W / 2 - 300, R = W / 2 + 300;
-    ctx.font = '600 12px Georgia, serif';
-    ctx.fillStyle = 'rgba(150,150,160,0.65)';
-    ctx.textAlign = 'left';   ctx.fillText('#', L + 8, 112);
-    ctx.fillText('NAME', L + 46, 112);
-    ctx.textAlign = 'right';  ctx.fillText('DAMAGE', L + 330, 112);
-    ctx.fillText('TIME', L + 452, 112);
-    ctx.textAlign = 'left';   ctx.fillText('FELLED HIM', L + 476, 112);
-
-    const n = Math.min(rows.length, 11);
-    for (let i = 0; i < n; i++) {
-      const r = rows[i], y = 142 + i * 30;
-      const isNew = i === G.lastRank;
-      if (isNew) {
-        ctx.fillStyle = `rgba(255,158,44,${0.10 + 0.06 * Math.sin(G.time * 5)})`;
-        ctx.fillRect(L, y - 20, R - L, 28);
-      }
-      const gold = r.killed;
-      ctx.font = (i < 3 ? '600 ' : '') + '19px Georgia, "Times New Roman", serif';
-      ctx.fillStyle = gold ? '#e8c15a' : (i < 3 ? '#e6e0d0' : 'rgba(211,204,189,0.8)');
-      ctx.textAlign = 'left';
-      ctx.fillText(String(i + 1), L + 8, y);
-      ctx.fillText(r.name, L + 46, y);
-      ctx.textAlign = 'right';
-      ctx.font = (i < 3 ? '600 ' : '') + '19px Georgia, serif';
-      ctx.fillText(String(r.dmg), L + 330, y);
-      ctx.fillText(fmtTime(r.ms), L + 452, y);
-      if (gold) {
-        ctx.textAlign = 'left';
-        ctx.fillStyle = '#e8c15a';
-        ctx.font = '15px Georgia, serif';
-        ctx.fillText('†', L + 500, y);      // a mark for those who finished it
-      }
-    }
-    if (rows.length > n) {
-      ctx.textAlign = 'center';
-      ctx.font = 'italic 12px Georgia, serif';
-      ctx.fillStyle = 'rgba(150,150,160,0.5)';
-      ctx.fillText('and ' + (rows.length - n) + ' more', W / 2, 142 + n * 30 + 8);
-    }
-  }
-
-  ctx.textAlign = 'center';
-  const blink = 0.55 + 0.45 * Math.sin(G.time * 3);
-  ctx.globalAlpha = blink;
-  ctx.fillStyle = '#cfc8ba';
-  ctx.font = '16px Georgia, serif';
-  ctx.fillText(promptText('confirm') + '  to return', W / 2, 502);
+  ctx.font = '600 18px Georgia, serif';
+  ctx.fillText(promptText('confirm') + '  to traverse the fog', W / 2, 508);
   ctx.globalAlpha = 1;
   ctx.textAlign = 'left';
 }
@@ -3689,8 +3859,6 @@ function render() {
       break;
     }
     case 'fight': drawWorld(); if (G.paused) drawPause(); break;
-    case 'entry': drawEntry(); break;
-    case 'board': drawBoard(); break;
     case 'dead': drawDead(); break;
     case 'victory': drawVictory(); break;
   }
@@ -3708,7 +3876,7 @@ function drawAudioNotice() {
     ctx.globalAlpha = bl;
     ctx.fillStyle = '#e8c15a';
     ctx.font = '600 14px Georgia, serif';
-    ctx.fillText('press a key or click once to wake the sound', W / 2, 520);
+    ctx.fillText('press a key or click once to wake the sound', W / 2, 531);
     ctx.restore();
   } else {
     ctx.save();
@@ -3786,7 +3954,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, sfx, AudioSys, Board, resetFight, damagePlayer, damageBoss, onParrySuccess, bossStartAttack, ATK1, ATK2, startCarve };
+window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, onParrySuccess, bossStartAttack, ATK1, ATK2, CHARS, CH, SP_MAX, startCarve };
 </script>
 </body>
 </html>
