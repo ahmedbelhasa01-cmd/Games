@@ -967,22 +967,49 @@ const CHARS = [
     line: 'he took what he was handed, and learned its weight',
     accent: '#9fc7ff',
     speed: 158, rollDur: 0.56, rollSpeed: 430,   // grounded; the roll takes a while to end
+    iFrames: 0.6,                                // fraction of the roll spent untouchable
     poisePerHit: 1.5,                            // four clean hits break his stance
     canBlock: true, dashCancel: false, bleed: false,
-    lightDur: 0.55, lightStam: 26, lightDmg: 44, lightReach: 96, lightHalf: 1.45, lightChain: 2,
+    lightDur: 0.55, lightStam: 26, lightDmg: 44, lightReach: 96, lightHalf: 1.45, lightChain: 3,
     heavyDur: 0.95, heavyStam: 42, heavyDmg: 72, heavyReach: 104, heavyHalf: 1.3,
-    chargeMax: 1.6, chargeDrain: 9
+    chargeMax: 1.6, chargeDrain: 9,
+    /* the string: a diagonal cut, the return cut out of its follow-through
+       (the sword is already there, so it starts faster), and a step-in thrust
+       that ends the sentence */
+    lightStr: [
+      { dur: 0.55, dmg: 44, stam: 26, reach: 96, half: 1.45, kind: 'cut', side: 1 },
+      { dur: 0.44, dmg: 44, stam: 24, reach: 96, half: 1.45, kind: 'cut', side: -1 },
+      { dur: 0.6, dmg: 58, stam: 28, reach: 114, half: 0.72, kind: 'thrust', poise: 2, glide: 210 }
+    ],
+    /* the overhead smash, and a waist-height reap that carries him through it */
+    heavyStr: [
+      { dur: 0.95, dmg: 72, stam: 42, reach: 104, half: 1.3, kind: 'smash', charge: true, glide: 150 },
+      { dur: 0.8, dmg: 60, stam: 34, reach: 108, half: 2.0, kind: 'reap', glide: 130 }
+    ]
   },
   {
     id: 'pair', name: 'THE SCAVENGED PAIR',
     line: 'he left the sword in the floor and took the dead ones instead',
     accent: '#d8654e',
     speed: 200, rollDur: 0.36, rollSpeed: 500,   // never where the swing is
+    iFrames: 0.78,                               // the dodge is his whole argument — it commits less and protects more
     poisePerHit: 0.67,                           // nine hits before he staggers
     canBlock: false, dashCancel: true, bleed: true,
-    lightDur: 0.26, lightStam: 12, lightDmg: 15, lightReach: 68, lightHalf: 0.95, lightChain: 4,
+    lightDur: 0.26, lightStam: 12, lightDmg: 18, lightReach: 68, lightHalf: 0.95, lightChain: 4,
     heavyDur: 0.5, heavyStam: 24, heavyDmg: 34, heavyReach: 82, heavyHalf: 1.9,
-    chargeMax: 0, chargeDrain: 0
+    chargeMax: 0, chargeDrain: 0,
+    /* three alternating cuts, and then both knives at once — the scissor */
+    lightStr: [
+      { dur: 0.26, dmg: 18, stam: 12, reach: 68, half: 0.95, kind: 'cut', side: 1 },
+      { dur: 0.26, dmg: 18, stam: 12, reach: 68, half: 0.95, kind: 'cut', side: -1 },
+      { dur: 0.26, dmg: 18, stam: 12, reach: 68, half: 0.95, kind: 'cut', side: 1 },
+      { dur: 0.34, dmg: 30, stam: 16, reach: 76, half: 1.1, kind: 'scissor', bleed2: true, glide: 120 }
+    ],
+    /* the spin, and a counter-spin the other way that ends low */
+    heavyStr: [
+      { dur: 0.5, dmg: 34, stam: 24, reach: 82, half: 1.9, kind: 'spin', cuts: 2, glide: 330 },
+      { dur: 0.46, dmg: 34, stam: 20, reach: 82, half: 1.9, kind: 'rspin', cuts: 2, glide: 260 }
+    ]
   }
 ];
 function CH() { return CHARS[G.charIdx] || CHARS[0]; }
@@ -993,7 +1020,7 @@ const P = {  // Nomad
   hp: 100, hpMax: 100, hpGhost: 100,
   st: 100, stMax: 100, stDelay: 0, stFlash: 0,
   walkT: 0, trail: [], scarf: [], speedNow: 0, swingAlt: false,
-  blocking: false, blockStun: 0, chain: 0, chainT: 0,
+  blocking: false, blockStun: 0, chain: 0, chainT: 0, hchain: 0, hchainT: 0, actQueue: null,
   ritualCd: 0, coatT: 0,     // the blood ritual: a minute between cuts, thirty seconds of coated steel
   spGauge: 30,           // the answering blow — thirty slow seconds between uses
   flasks: 3, flaskMax: 3,
@@ -1017,7 +1044,7 @@ const B = {  // boss
   cd: 1.2,
   atk: null, atkSet: 1, phaseIdx: 0, phaseT: 0, phaseDur: 0, hitDone: false,
   poise: 0, staggerT: 0,
-  strafeDir: 1, strafeT: 0, approachT: 0,
+  strafeDir: 1, strafeT: 0, approachT: 0, hopT: 0, weaveSeed: 0,
   bleed: 0, bleedMax: 100,   // blood owed: damage still to be paid out by the coated cuts
   defBreak: 0,               // armor sundered by full-charged blows — 1% more taken, each, forever
   broken: false,        // the haft is snapped; phase 2 weapon
@@ -1116,7 +1143,8 @@ function resetFight() {
   P.x = ARENA.x + 130; P.y = ARENA.y + ARENA.h / 2;
   P.hp = P.hpMax; P.hpGhost = P.hpMax; P.st = P.stMax; P.stDelay = 0; P.stFlash = 0;
   P.walkT = 0; P.trail.length = 0; P.speedNow = 0; P.blocking = false;
-  P.blockStun = 0; P.chain = 0; P.chainT = 0; P.ritualCd = 0; P.coatT = 0; P.spGauge = SP_MAX;
+  P.blockStun = 0; P.chain = 0; P.chainT = 0; P.hchain = 0; P.hchainT = 0; P.actQueue = null;
+  P.ritualCd = 0; P.coatT = 0; P.spGauge = SP_MAX;
   P.scarf = []; for (let i = 0; i < 6; i++) P.scarf.push({ x: P.x, y: P.y });
   P.flaskMax = flaskAllowance();
   P.flasks = P.flaskMax; P.face = 0; P.moveDirX = 1; P.moveDirY = 0;
@@ -1130,6 +1158,7 @@ function resetFight() {
   B.poise = 0; B.staggerT = 0; B.bleed = 0; B.defBreak = 0; B.wOff = 0.5; B.wLen = 86; B.tele = 0; B.flash = 0; B.dieT = 0;
   B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0; B.readCd = 0;
   B.hesitated = false; B.mourned = false; B.coreDim = 0; B.guarding = false;
+  B.hopT = 0; B.weaveSeed = Math.random() * 10;
 
   G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0;
   G.fissures.length = 0; G.debris = null; G.shedPlates = []; B.r = 34;
@@ -1145,6 +1174,10 @@ function resetFight() {
 function flaskAllowance() { return 3 + Math.min(2, Math.floor(G.deaths / 3)); }
 
 /* ---------- camera: a slow drift toward the action, pushed in for the beats ---------- */
+function camKick(ang, amt) {
+  G.kickX = Math.cos(ang) * amt;
+  G.kickY = Math.sin(ang) * amt;
+}
 function updateCamera(dt) {
   let tx = W / 2, ty = H / 2, tz = 1.04;
   if (G.screen === 'fight' || G.screen === 'refade' || G.screen === 'dead' || G.screen === 'victory') {
@@ -1152,6 +1185,11 @@ function updateCamera(dt) {
     const mx = (P.x + B.x) / 2, my = (P.y + B.y) / 2;
     tx = W / 2 + clamp((mx - W / 2) * 0.28, -16, 16);
     ty = H / 2 + clamp((my - H / 2) * 0.28, -9, 9);
+    // when the two close in, the camera leans in with them
+    if (G.screen === 'fight' && B.state !== 'break' && B.state !== 'carve') {
+      const closeness = clamp(1 - dist(P.x, P.y, B.x, B.y) / 420, 0, 1);
+      tz = 1.04 + closeness * 0.05;
+    }
     if (G.screen === 'dead') {         // stay on the body — this is the beat that was invisible
       const kk = clamp(G.screenT / 0.7, 0, 1);
       tz = 1.04 + 0.44 * kk;
@@ -1165,6 +1203,10 @@ function updateCamera(dt) {
   G.cam.x = lerp(G.cam.x, tx, Math.min(1, sp * dt));
   G.cam.y = lerp(G.cam.y, ty, Math.min(1, sp * dt));
   G.cam.zoom = lerp(G.cam.zoom, tz, Math.min(1, sp * dt));
+  // the directional kick: every landed hit shoves the frame along the blow
+  G.kickX = (G.kickX || 0) * Math.max(0, 1 - 9 * dt);
+  G.kickY = (G.kickY || 0) * Math.max(0, 1 - 9 * dt);
+  G.cam.x += G.kickX; G.cam.y += G.kickY;
   // never let the drift reveal past the world edges
   const halfW = W / (2 * G.cam.zoom), halfH = H / (2 * G.cam.zoom);
   G.cam.x = clamp(G.cam.x, halfW, W - halfW);
@@ -1193,7 +1235,7 @@ function addSlash(x, y, ang, r, half, col, dur) {
 function playerInvulnerable() {
   if (G.cinematic) return true;
   if (P.hurtInv > 0) return true;
-  if (P.act && P.act.type === 'roll' && P.act.t < P.act.dur * 0.6) return true;
+  if (P.act && P.act.type === 'roll' && P.act.t < P.act.dur * CH().iFrames) return true;
   return false;
 }
 
@@ -1289,7 +1331,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
       P.hurtInv = 0.45;
       const gba = Math.atan2(P.y - srcY, P.x - srcX);
       P.kbX = Math.cos(gba) * 330; P.kbY = Math.sin(gba) * 330;
-      P.act = { type: 'hurt', t: 0, dur: 0.7 };
+      P.act = { type: 'hurt', t: 0, dur: 0.7 }; P.actQueue = null;
       G.hitstop = Math.max(G.hitstop, 0.08);
       G.shake = Math.max(G.shake, 11);
       spawnParticles(P.x, P.y, 16, '#c33b3b', 200, 0.5);
@@ -1303,10 +1345,11 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
   P.flash = 0.12;
   P.hurtInv = 0.45;
   const a = Math.atan2(P.y - srcY, P.x - srcX);
+  camKick(a, 4.5);
   const kb = 260 * (kbMult || 1);
   P.kbX = Math.cos(a) * kb; P.kbY = Math.sin(a) * kb;
   const wasFlask = P.act && P.act.type === 'flask';
-  P.act = { type: 'hurt', t: 0, dur: 0.35 };
+  P.act = { type: 'hurt', t: 0, dur: 0.35 }; P.actQueue = null;
   if (wasFlask) sfx.flaskEmpty(); // the sip is wasted
   G.hitstop = Math.max(G.hitstop, 0.07);
   G.shake = Math.max(G.shake, 9 + dmg * 0.15);
@@ -1337,11 +1380,12 @@ function damageBoss(dmg, noBleed) {
   G.hitstop = Math.max(G.hitstop, 0.07);
   G.shake = Math.max(G.shake, 4);
   const a = Math.atan2(P.y - B.y, P.x - B.x);
+  camKick(a + Math.PI, 2.6);   // the frame leans into the blow
   spawnParticles(B.x + Math.cos(a) * B.r, B.y + Math.sin(a) * B.r, 10, '#e8e2d0', 170, 0.4);
   G.dmgNums.push({ x: B.x + Math.cos(a) * (B.r + 10), y: B.y + Math.sin(a) * (B.r + 10) - 6, v: dmg, t: 0 });
   if (!lethal) sfx.hitArmor();   // the last blow belongs to his cry alone
   rumble(70, 0.15, 0.5);
-  if (!noBleed && !lethal) addBleed(dmg);   // a coated cut banks its share of the debt
+  if (!noBleed && !lethal) addBleed();   // a coated cut banks its share of the debt
 
   if (B.poise >= 6 && B.state !== 'stagger' && B.state !== 'break' && B.state !== 'daze' && B.state !== 'hesitate') {
     B.state = 'stagger'; B.stateT = 0; B.staggerT = 1.5; B.poise = 0;
@@ -1420,10 +1464,10 @@ function startRitual() {
   spawnParticles(P.x, P.y, 14, '#c0392b', 160, 0.5);
   spawnParticles(P.x, P.y, 6, '#e8654e', 220, 0.35);
 }
-function addBleed(dmg) {
+function addBleed() {
   if (!CH().bleed || P.coatT <= 0) return;
   if (B.state === 'carve' || B.hp <= 0 || G.screen !== 'fight') return;
-  B.bleed += B.hpMax * 0.00125;            // twenty coated hits = 2.5% of his life, owed
+  B.bleed += B.hpMax * 0.0025;             // twenty coated hits = 5% of his life, owed
 }
 
 /* ---------- the carving (the ending) ---------- */
@@ -1494,6 +1538,13 @@ function updatePlayer(dt) {
 
   /* ---- start buffered actions ---- */
   const C = CH();
+  /* a press made mid-swing is remembered until the swing ends — this is what
+     makes the strings chain like they should, instead of the input dying in
+     the 150ms buffer while a long swing finishes */
+  if (P.act && (P.act.type === 'light' || P.act.type === 'heavy') && !P.act.charging && P.act.t > P.act.dur * 0.3) {
+    if (Input.light) P.actQueue = 'light';
+    if (Input.heavy) P.actQueue = 'heavy';
+  }
   // DASH-CANCEL — the scavenged pair may leave any attack's recovery early.
   // This is the whole character: mobility instead of a guard.
   let canAct = (!P.act || (P.act.type === 'flask')) && P.blockStun <= 0;
@@ -1514,7 +1565,9 @@ function updatePlayer(dt) {
         else { dx = Math.cos(P.face); dy = Math.sin(P.face); }
       } else { dx = mvX / (Math.hypot(mvX, mvY) || 1); dy = mvY / (Math.hypot(mvX, mvY) || 1); }
       P.act = { type: 'roll', t: 0, dur: C.rollDur, dirX: dx, dirY: dy };
+      P.actQueue = null;
       sfx.roll(C.id === 'pair');
+      for (let i = 0; i < 4; i++) spawnDrift(P.x - dx * 8, P.y - dy * 8 + 5, -dx * rand(20, 50) + rand(-12, 12), rand(-18, -4), 'rgba(150,146,138,0.45)', rand(0.3, 0.5), rand(1.5, 2.5));
     } else if (want === 'parry' && (!P.act) && P.st > 0) {
       Input.consumeBuffer();
       spendStamina(10);
@@ -1535,16 +1588,23 @@ function updatePlayer(dt) {
     } else if ((want === 'light' || want === 'heavy') && (!P.act) && P.st > 0) {
       Input.consumeBuffer();
       const heavy = want === 'heavy';
-      spendStamina(heavy ? C.heavyStam : C.lightStam);
+      /* strings: each press inside the window advances the sentence.
+         Lights and heavies keep separate chains, like they should. */
+      const str = heavy ? C.heavyStr : C.lightStr;
+      if (heavy) {
+        P.hchain = (P.hchainT > 0) ? (P.hchain + 1) % str.length : 0;
+        P.hchainT = 0.75;
+      } else {
+        P.chain = (P.chainT > 0) ? (P.chain + 1) % str.length : 0;
+        P.chainT = 0.6;
+      }
+      const spec = str[heavy ? P.hchain : P.chain];
+      spendStamina(spec.stam);
       if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
-      // light attacks chain, alternating side; the chain lapses if you pause
-      if (!heavy && P.chainT > 0) P.chain = (P.chain + 1) % C.lightChain;
-      else if (!heavy) P.chain = 0;
-      P.chainT = 0.55;
       P.swingAlt = !P.swingAlt;
-      P.act = { type: want, t: 0, dur: heavy ? C.heavyDur : C.lightDur, hitDone: false, face: P.face,
-                side: heavy ? 1 : (P.chain % 2 ? -1 : 1), held: 0,
-                charging: heavy && C.chargeMax > 0, chargeT: 0, chargeToll: false };
+      P.act = { type: want, t: 0, dur: spec.dur, spec, hitDone: false, face: P.face,
+                side: spec.side || 1, held: 0,
+                charging: heavy && !!spec.charge && C.chargeMax > 0, chargeT: 0, chargeToll: false };
       G.lastAggro = G.time;                  // swinging reads as aggression
     } else if ((want === 'light' || want === 'heavy' || want === 'roll' || want === 'parry') && P.st <= 0) {
       // not enough stamina — drop it and flash the stamina bar
@@ -1577,9 +1637,18 @@ function updatePlayer(dt) {
     } else if (a.type === 'light' || a.type === 'heavy') {
       speedMul = 0;
       const heavy = a.type === 'heavy';
+      const spec = a.spec || (heavy ? C.heavyStr[0] : C.lightStr[0]);
       const held = a.held || 0;                    // time spent frozen at the top of a charge
       const et = a.t - held;                       // elapsed swing time, charge excluded
       const wStart = a.dur * (heavy ? 0.42 : 0.38), wEnd = a.dur * (heavy ? 0.64 : 0.68);
+
+      // soft tracking through the wind-up — the string turns with its target
+      if (et < a.dur * 0.3 && !a.charging) {
+        const want2 = P.locked ? Math.atan2(B.y - P.y, B.x - P.x)
+          : (Input.moveMag > 0.01 ? Math.atan2(Input.moveY, Input.moveX) : a.face);
+        a.face = turnToward(a.face, want2, 4.5 * dt);
+        P.face = a.face;
+      }
 
       /* THE GIVEN BLADE's charged heavy: keep the trigger down and he holds the
          sword at the top, the edge gathering pale light. It burns stamina the
@@ -1610,18 +1679,18 @@ function updatePlayer(dt) {
       const full = ck >= 0.55;                     // enough of a charge to matter
       const power = heavy ? 1 + ck * 1.0 : 1;
 
-      // both heavies carry the body forward — one steps into it, one spins through it
-      if (heavy && !a.charging && et > a.dur * 0.16 && et < a.dur * 0.62) {
-        const step = (C.id === 'pair' ? 330 : 150) * (1 + ck * 0.5);
+      // every swing carries the body — nobody fences flat-footed
+      if (!a.charging && et > a.dur * 0.16 && et < a.dur * 0.62) {
+        const step = (spec.glide || 60) * (1 + ck * 0.5);
         P.x += Math.cos(a.face) * step * dt; P.y += Math.sin(a.face) * step * dt;
       }
 
-      const reach = heavy ? C.heavyReach : C.lightReach;
-      const half = heavy ? C.heavyHalf : C.lightHalf;
-      const base = heavy ? C.heavyDmg : C.lightDmg;
+      const reach = spec.reach;
+      const half = spec.half;
+      const base = spec.dmg;
 
-      /* the pair's heavy is a spin: it cuts twice, once per blade */
-      const cuts = (heavy && C.id === 'pair') ? 2 : 1;
+      /* the spins cut twice, once per blade */
+      const cuts = spec.cuts || 1;
       for (let ci = 0; ci < cuts; ci++) {
         const cs = wStart + (wEnd - wStart) * (ci / cuts);
         const ce = cuts === 1 ? wEnd : wStart + (wEnd - wStart) * ((ci + 0.7) / cuts);
@@ -1631,7 +1700,13 @@ function updatePlayer(dt) {
           if (d < reach + hitR && Math.abs(angDiff(a.face, Math.atan2(B.y - P.y, B.x - P.x))) < half + Math.asin(clamp(hitR / Math.max(d, hitR), 0, 1))) {
             a['hit' + ci] = true; a.hitDone = true;
             damageBoss(Math.round(base / cuts * power));
-            if (heavy && full) {
+            if (spec.poise) B.poise += CH().poisePerHit * (spec.poise - 1);   // the thrust lands like a hammer
+            if (spec.bleed2) addBleed();                                      // the scissor banks its debt twice
+            if (spec.kind === 'thrust' || spec.kind === 'scissor') {
+              G.hitstop = Math.max(G.hitstop, 0.09);
+              G.shake = Math.max(G.shake, 6);
+            }
+            if (heavy && full && spec.charge) {
               if (a.chargeToll) {          // held to the toll: the armor itself gives, 1% forever
                 B.defBreak += 1;
                 sfx.crack();
@@ -1654,10 +1729,17 @@ function updatePlayer(dt) {
           a['sl' + ci] = true;
           sfx.swing(heavy, C.id === 'pair');
           const col = C.id === 'pair' ? '#e8ddc8' : '#dfe6f2';
-          addSlash(P.x, P.y, a.face + (ci ? 0.5 : -0.2) * (cuts > 1 ? 1 : 0), reach, half * (C.id === 'pair' ? 0.8 : 1.05), col, C.id === 'pair' ? 0.11 : 0.18);
+          const arcHalf = spec.kind === 'thrust' ? 0.5 : half * (C.id === 'pair' ? 0.8 : 1.05);
+          addSlash(P.x, P.y, a.face + (ci ? 0.5 : -0.2) * (cuts > 1 ? 1 : 0), reach, arcHalf, col, C.id === 'pair' ? 0.11 : 0.18);
         }
       }
-      if (!a.charging && a.t >= a.dur + held) P.act = null;
+      if (!a.charging && a.t >= a.dur + held) {
+        P.act = null;
+        // the follow-up window opens when the swing ENDS — a long smash must
+        // still be answerable by its own reap
+        if (heavy) P.hchainT = 0.75; else P.chainT = 0.6;
+        if (P.actQueue) { Input.setBuffer(P.actQueue); P.actQueue = null; }
+      }
     } else if (a.type === 'parry') {
       speedMul = 0;
       if (a.t >= a.dur) P.act = null;
@@ -1718,6 +1800,9 @@ function updatePlayer(dt) {
     P.x += mvX * sp * dt; P.y += mvY * sp * dt;
     P.walkT += sp * dt * 0.05;
     P.speedNow = sp;
+    if (sp > 220 && Math.random() < dt * 9) {
+      spawnDrift(P.x - mvX * 10, P.y - mvY * 10 + 6, -mvX * rand(14, 34), rand(-14, -3), 'rgba(150,146,138,0.4)', rand(0.3, 0.5), rand(1.4, 2.2));
+    }
     // closing distance reads as aggression
     if (mag > 0.01) {
       const ux = B.x - P.x, uy = B.y - P.y, ul = Math.hypot(ux, uy) || 1;
@@ -1727,6 +1812,7 @@ function updatePlayer(dt) {
 
   P.blockStun = Math.max(0, P.blockStun - dt);
   P.chainT = Math.max(0, P.chainT - dt);
+  P.hchainT = Math.max(0, P.hchainT - dt);
   P.spGauge = Math.min(SP_MAX, P.spGauge + dt);   // the answering blow, slowly owed again      // the chain lapses if you stop swinging
 
   /* ---- stamina regen: delayed, never while sprinting or mid-action ---- */
@@ -1821,7 +1907,17 @@ function updateBoss(dt) {
 
   // phase-2 embers drift off him
   if (B.phase2 && B.state !== 'dying' && B.state !== 'carve' && Math.random() < dt * 8) {
-    spawnDrift(B.x + rand(-26, 26), B.y + rand(-26, 26), rand(-10, 10), rand(-48, -22), ACCENT, rand(0.4, 0.9), rand(1.5, 3));
+    spawnDrift(B.x + rand(-16, 16), B.y + rand(-16, 16), rand(-10, 10), rand(-48, -22), ACCENT, rand(0.4, 0.9), rand(1.5, 3));
+  }
+  // and an ember wind crosses the arena — after the break, even the air is different
+  if (B.phase2 && B.state !== 'carve' && Math.random() < dt * 2.4) {
+    const fromLeft = Math.random() < 0.5;
+    spawnDrift(fromLeft ? ARENA.x + 6 : ARENA.x + ARENA.w - 6, rand(ARENA.y + 30, ARENA.y + ARENA.h - 30),
+      (fromLeft ? 1 : -1) * rand(45, 90), rand(-16, 4), 'rgba(255,158,44,0.35)', rand(2.2, 3.6), rand(1.2, 2));
+  }
+  // his own footwork stirs the ash
+  if ((B.state === 'idle' || B.state === 'chainPause') && !G.cinematic && Math.random() < dt * (B.phase2 ? 5 : 2.5)) {
+    spawnDrift(B.x + rand(-14, 14), B.y + rand(4, 12), rand(-10, 10), rand(-12, -3), 'rgba(150,146,138,0.35)', rand(0.3, 0.6), rand(1.4, 2.2));
   }
   // ash sloughs off his shoulders while he stands
   if ((B.state === 'idle' || B.state === 'chainPause') && Math.random() < dt * 3) {
@@ -2012,10 +2108,16 @@ function updateBoss(dt) {
       B.wOff = lerp(B.wOff, passive ? 1.05 : 0.5, 4 * dt);
       B.wLen = lerp(B.wLen, 86, 4 * dt);
       B.face = turnToward(B.face, angToP, 3.0 * dt);
+      if (B.hopT > 0) {                    // the disengaging step
+        B.hopT -= dt;
+        B.x -= Math.cos(angToP) * 240 * dt; B.y -= Math.sin(angToP) * 240 * dt;
+        if (Math.random() < dt * 20) spawnDrift(B.x - Math.cos(angToP) * 20, B.y + 8, rand(-8, 8), rand(-14, -4), 'rgba(150,146,138,0.4)', 0.4, 2);
+      }
       const gap = preferredGap();
       if (d > (passive ? 250 : 165) * gap) {
         const sp = d > 300 ? 162 : 112;
-        B.x += Math.cos(angToP) * sp * dt; B.y += Math.sin(angToP) * sp * dt;
+        const weave = Math.sin(G.time * 1.4 + B.weaveSeed) * 0.5;   // he closes at an angle, not on rails
+        B.x += Math.cos(angToP + weave) * sp * dt; B.y += Math.sin(angToP + weave) * sp * dt;
       } else {
         B.strafeT -= dt;
         if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.8, 1.8); }
@@ -2032,8 +2134,14 @@ function updateBoss(dt) {
       B.wOff = lerp(B.wOff, 0.35, 5 * dt);   // low stance, blade forward and level
       B.wLen = lerp(B.wLen, 58, 5 * dt);
       B.face = turnToward(B.face, angToP, 4.2 * dt);
+      if (B.hopT > 0) {
+        B.hopT -= dt;
+        B.x -= Math.cos(angToP) * 300 * dt; B.y -= Math.sin(angToP) * 300 * dt;
+        if (Math.random() < dt * 24) spawnDrift(B.x - Math.cos(angToP) * 16, B.y + 6, rand(-8, 8), rand(-14, -4), 'rgba(150,146,138,0.4)', 0.35, 2);
+      }
       if (d > 140 * preferredGap()) {
-        B.x += Math.cos(angToP) * 175 * dt; B.y += Math.sin(angToP) * 175 * dt;
+        const weave = Math.sin(G.time * 2.1 + B.weaveSeed) * 0.55;
+        B.x += Math.cos(angToP + weave) * 175 * dt; B.y += Math.sin(angToP + weave) * 175 * dt;
       } else {
         B.strafeT -= dt;
         if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.6, 1.4); }
@@ -2177,6 +2285,8 @@ function updateBoss(dt) {
           B.chainCount = 0;
           B.state = 'idle'; B.stateT = 0;
           B.cd = B.phase2 ? rand(0.25, 0.65) : rand(0.8, 1.35);
+          // a third of the time he disengages a step — resets the spacing, reads alive
+          if (Math.random() < 0.35) B.hopT = B.phase2 ? 0.24 : 0.18;
         }
       } else {
         B.phaseDur = atk.phases[B.phaseIdx].d;
@@ -2324,7 +2434,11 @@ function drawFloor() {
 
   // corner braziers — the arena's only warm light (flicker is dynamic, drawn per frame)
   for (const c of BRAZIERS) {
-    const fl = 0.75 + 0.25 * Math.sin(G.time * 7 + c[0] * 0.1);
+    let fl = 0.75 + 0.25 * Math.sin(G.time * 7 + c[0] * 0.1);
+    // a body rushing past drags the flame with it
+    const dp = dist(P.x, P.y, c[0], c[1]), db = dist(B.x, B.y, c[0], c[1]);
+    const rush = (dp < 90 && P.speedNow > 160) || (db < 110 && (B.state === 'attack' || B.hopT > 0));
+    if (rush) fl *= 0.55 + 0.25 * Math.sin(G.time * 26 + c[1]);
     ctx.globalAlpha = 0.16 * fl;
     ctx.drawImage(GLOW_EMBER, c[0] - 90 * fl, c[1] - 90 * fl, 180 * fl, 180 * fl);
     ctx.globalAlpha = 1;
@@ -2659,18 +2773,34 @@ function drawBladeBody(white) {
   let swordAng = 0.75, swordLen = 30;
   let trailFrom = null;   // when set, ghost blades sweep behind the cut
   if (P.act && (P.act.type === 'light' || P.act.type === 'heavy')) {
-    const heavy = P.act.type === 'heavy';
     const alt = P.act.side || 1;
-    if (heavy && P.act.charging) {
+    const kind = (P.act.spec && P.act.spec.kind) || 'cut';
+    if (P.act.charging) {
       // held at the top of the wind-up; trembles as the charge builds
       const ch = chargeK();
       swordAng = -1.85 + Math.sin(G.time * (20 + ch * 34)) * 0.05 * ch;
       swordLen = 36;
-    } else if (heavy) {
+    } else if (kind === 'smash') {
       const k = clamp((P.act.t - (P.act.held || 0)) / (P.act.dur * 0.58), 0, 1);
       swordAng = lerp(-1.85, 1.15, k * k);       // overhead, driven straight down
       swordLen = 36 + (P.act.chargeT || 0) * 2.5;
       if (k > 0.25 && k < 1) trailFrom = { ang: swordAng, step: -0.42, len: swordLen };
+    } else if (kind === 'reap') {
+      // the follow-through: a waist-height reaping cut, all the way around the front
+      const k = clamp(P.act.t / (P.act.dur * 0.6), 0, 1);
+      const e = k < 0.4 ? (k / 0.4) * (k / 0.4) * 0.25 : 0.25 + (k - 0.4) / 0.6 * 0.75;
+      swordAng = lerp(2.4, -2.2, e);
+      swordLen = 37;
+      if (e > 0.28 && e < 1) trailFrom = { ang: swordAng, step: 0.5, len: swordLen };
+    } else if (kind === 'thrust') {
+      // gathered back over the hip, then driven straight through the line
+      const k = P.act.t / P.act.dur;
+      if (k < 0.3) { swordAng = lerp(0.75, 1.9, k / 0.3); swordLen = 32; }
+      else if (k < 0.62) {
+        const e = (k - 0.3) / 0.32;
+        swordAng = lerp(1.9, 0.02, e * e); swordLen = 32 + e * 10;
+        if (e > 0.5) trailFrom = { ang: swordAng, step: 0.35, len: swordLen };
+      } else { swordAng = lerp(0.02, 0.75, (k - 0.62) / 0.38); swordLen = 38; }
     } else {
       const k = clamp(P.act.t / (P.act.dur * 0.62), 0, 1);
       swordAng = lerp(-1.6 * alt, 1.35 * alt, k);
@@ -2757,10 +2887,12 @@ function drawPairBody(white) {
   ctx.rotate(sprintingNow ? 0.14 : 0.05);          // always leaning into it
 
   const a = P.act;
-  const spinning = a && a.type === 'heavy';
+  const pKind = (a && a.spec && a.spec.kind) || '';
+  const spinning = pKind === 'spin' || pKind === 'rspin';
   if (spinning) {
     const k = clamp(a.t / a.dur, 0, 1);
-    ctx.rotate(k * Math.PI * 2.0);                 // the whole body carries the cut around
+    ctx.rotate((pKind === 'rspin' ? -1 : 1) * k * Math.PI * 2.0);   // and the counter-spin unwinds it
+    if (pKind === 'rspin') ctx.scale(1, 1 - 0.18 * Math.sin(k * Math.PI));   // sinking low through the turn
   }
 
   // torn short cloak — ragged hem, cut down to nothing at the knees
@@ -2832,7 +2964,14 @@ function drawPairBody(white) {
   // TWO blades. Whichever hand is cutting sweeps; the other stays low and ready.
   let angR = 0.95, angL = -0.95, lenR = 22, lenL = 22;
   let trailSide = 0, trailAng = 0;
-  if (a && a.type === 'light') {
+  let scissorK = -1;
+  if (a && a.type === 'light' && pKind === 'scissor') {
+    // both knives at once, closing like shears
+    const k = clamp(a.t / (a.dur * 0.7), 0, 1);
+    scissorK = k;
+    const sw = lerp(-1.7, 0.22, k * k);
+    angR = sw; angL = -sw; lenR = lenL = 25;
+  } else if (a && a.type === 'light') {
     const k = clamp(a.t / (a.dur * 0.66), 0, 1);
     const sw = lerp(-1.5, 1.25, k);
     if ((a.side || 1) > 0) { angR = sw; lenR = 24; trailSide = 1; trailAng = sw; }
@@ -2869,6 +3008,22 @@ function drawPairBody(white) {
       ctx.lineWidth = 1.1;
       ctx.beginPath(); ctx.moveTo(3, 0); ctx.lineTo(trailSide > 0 ? 24 : 24, 0); ctx.stroke();
       ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+  // the scissor leaves a pair of converging lines, one from each hand
+  if (scissorK > 0.25 && scissorK < 1) {
+    for (const sgn of [1, -1]) {
+      for (let i = 1; i <= 3; i++) {
+        ctx.save();
+        ctx.globalAlpha = 0.3 - i * 0.08;
+        ctx.translate(2, sgn * 8);
+        ctx.rotate(sgn * (lerp(-1.7, 0.22, scissorK * scissorK) - 0.3 * i));
+        ctx.strokeStyle = '#e8ddc8';
+        ctx.lineWidth = 1.1;
+        ctx.beginPath(); ctx.moveTo(3, 0); ctx.lineTo(25, 0); ctx.stroke();
+        ctx.restore();
+      }
     }
     ctx.globalAlpha = 1;
   }
@@ -4166,7 +4321,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, onParrySuccess, bossStartAttack, ATK1, ATK2, CHARS, CH, SP_MAX, startCarve };
+window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, camKick, onParrySuccess, bossStartAttack, ATK1, ATK2, CHARS, CH, SP_MAX, startCarve };
 </script>
 </body>
 </html>
