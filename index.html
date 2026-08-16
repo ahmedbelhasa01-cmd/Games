@@ -1270,7 +1270,7 @@ function updateFissures(dt) {
         if (along > 8 && along < f.len) {
           const off = Math.abs(px * -dy + py * dx);
           if (off < 15 + P.r * 0.6) {
-            if (damagePlayer(22, f.x + dx * along, f.y + dy * along, false)) f.group.hit = true;
+            if (damagePlayer(26, f.x + dx * along, f.y + dy * along, false)) f.group.hit = true;
             else if (playerInvulnerable()) f.group.hit = true;   // rolled perpendicular — it's past you
           }
         }
@@ -1659,6 +1659,18 @@ function updatePlayer(dt) {
       const et = a.t - held;                       // elapsed swing time, charge excluded
       const wStart = a.dur * (heavy ? 0.42 : 0.38), wEnd = a.dur * (heavy ? 0.64 : 0.68);
 
+      /* intent beats sequence: a trigger still held a fifth of a second into
+         an unchargeable follow-up was asking for the charge all along — the
+         wind-up converts into the opening smash before anything commits */
+      if (heavy && !spec.charge && C.chargeMax > 0 && Input.heavyHeld && !a.hitDone
+          && a.t >= 0.2 && !a.converted) {
+        const s0 = C.heavyStr[0];
+        P.hchain = 0;
+        P.act = { type: 'heavy', t: a.t, dur: s0.dur, spec: s0, hitDone: false, face: a.face,
+                  side: 1, held: 0, charging: true, chargeT: 0, chargeToll: false, converted: true };
+        return;
+      }
+
       // soft tracking through the wind-up — the string turns with its target
       if (et < a.dur * 0.3 && !a.charging) {
         const want2 = P.locked ? Math.atan2(B.y - P.y, B.x - P.x)
@@ -1735,7 +1747,10 @@ function updatePlayer(dt) {
               if (a.chargeToll) {          // held to the toll: the armor itself gives, 1% forever
                 B.defBreak += 1;
                 sfx.crack();
-                spawnParticles(B.x, B.y, 10, '#e8c15a', 240, 0.5);
+                G.dmgNums.push({ x: B.x, y: B.y - B.r - 22, v: 'SUNDERED', t: 0 });
+                G.shake = Math.max(G.shake, 10);
+                spawnParticles(B.x, B.y, 20, '#e8c15a', 280, 0.6);
+                spawnParticles(B.x, B.y, 8, '#f6e7c0', 340, 0.4);
               }
               // the charged smash does not chip his poise, it ends it
               breakPoise();
@@ -2281,7 +2296,9 @@ function updateBoss(dt) {
         if (dist(cx, cy, P.x, P.y) < ph.hit.r + P.r) hit = true;
       }
       if (hit) {
-        const connected = damagePlayer(ph.dmg, B.x, B.y, true, ph.kb || 1);
+        // the maul carries his whole first argument; the shard trades weight for speed
+        const scaled = Math.round(ph.dmg * (B.phase2 ? 0.85 : 1.15));
+        const connected = damagePlayer(scaled, B.x, B.y, true, ph.kb || 1);
         B.hitDone = connected || B.hitDone;
         if (B.state !== 'attack') { B.phaseStarted = false; return; } // a parry knocked him out of the swing
         if (connected && ph.charge) B.phaseT = pdur;                  // the rush stops on a body
@@ -3751,10 +3768,13 @@ function drawDamageNumbers() {
     ctx.globalAlpha = (1 - k) * (1 - k);
     ctx.textAlign = 'center';
     ctx.font = '600 ' + (17 - k * 3).toFixed(1) + 'px Georgia, serif';
+    const word = typeof d.v === 'string';
+    const label = word ? d.v : Math.round(d.v);
+    if (word) ctx.font = '600 ' + (14 - k * 2).toFixed(1) + 'px Georgia, serif';
     ctx.fillStyle = '#0a0a0e';
-    ctx.fillText(Math.round(d.v), d.x + 1, d.y - k * 26 + 1);
-    ctx.fillStyle = d.v >= 50 ? '#ffd98a' : '#f0f3fa';
-    ctx.fillText(Math.round(d.v), d.x, d.y - k * 26);
+    ctx.fillText(label, d.x + 1, d.y - k * 26 + 1);
+    ctx.fillStyle = word ? '#e8c15a' : (d.v >= 50 ? '#ffd98a' : '#f0f3fa');
+    ctx.fillText(label, d.x, d.y - k * 26);
     ctx.restore();
   }
   ctx.textAlign = 'left';
@@ -3957,9 +3977,8 @@ function drawHUD() {
       ctx.save();
       const n = Math.min(B.defBreak, 24);
       for (let i = 0; i < n; i++) {
-        ctx.translate(0, 0);
-        ctx.fillStyle = 'rgba(232,193,90,0.85)';
-        ctx.fillRect(bx + bw - 6 - i * 7, by + 18, 4, 5);
+        ctx.fillStyle = 'rgba(232,193,90,0.9)';
+        ctx.fillRect(bx + bw - 8 - i * 9, by + 18, 5.5, 7);
       }
       if (B.defBreak > 24) {
         ctx.fillStyle = 'rgba(232,193,90,0.85)';
