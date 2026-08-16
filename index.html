@@ -260,6 +260,22 @@ const sfx = {
     _tone(ac, 'sine', 92, 40, 0.4, 0.42, t);
     _noise(ac, 0.5, 'lowpass', 700, 180, 0.16, t);
   }); },
+  // steel refusing steel — a bright open ring, longer than anything else here
+  clash() { this._run((ac, t) => {
+    _noise(ac, 0.012, 'highpass', 5000, 8000, 0.5, t);
+    [2489, 3671, 5230].forEach((f, i) => {
+      _tone(ac, 'triangle', f, f * 0.997, 0.55 - i * 0.12, 0.16 / (1 + i * 0.7), t);
+    });
+    _tone(ac, 'sine', 620, 240, 0.16, 0.2, t);
+    _tone(ac, 'sine', 180, 70, 0.22, 0.3, t);
+  }); },
+  // a maul shrugging two knives aside — no ring in it at all
+  deflect() { this._run((ac, t) => {
+    _noise(ac, 0.2, 'bandpass', 2100, 600, 0.4, t);
+    _tone(ac, 'sawtooth', 760, 320, 0.14, 0.07, t);
+    _noise(ac, 0.12, 'lowpass', 900, 300, 0.3, t + 0.02);
+    _tone(ac, 'sine', 150, 60, 0.18, 0.28, t);
+  }); },
   block() { this._run((ac, t) => {
     _tone(ac, 'sine', 210, 90, 0.14, 0.45, t);
     _tone(ac, 'square', 360, 250, 0.05, 0.1, t);
@@ -939,6 +955,7 @@ const G = {
   time: 0,
   firstFight: true,
   particles: [],
+  rings: [],            // clash shockwaves — an expanding breath of light
   slashes: [],          // transient slash-arc visuals
   dmgNums: [],          // floating damage numbers
   fissures: [],         // ember fissures racing out from a ground slam
@@ -1167,7 +1184,7 @@ function resetFight() {
   B.hesitated = false; B.mourned = false; B.coreDim = 0; B.guarding = false;
   B.hopT = 0; B.weaveSeed = Math.random() * 10;
 
-  G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0;
+  G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0; G.rings.length = 0;
   G.fissures.length = 0; G.debris = null; G.shedPlates = []; B.r = 34;
   G.barLifted = false; G.cinematic = false; G.lastAggro = -10;
   G.carve = null; G.victoryChimed = false;
@@ -1447,6 +1464,100 @@ function onParrySuccess() {
   }
 }
 
+/* =========================================================================
+   THE CLASH — two committed swings meeting in the same instant.
+   Rare by construction: the player's blade must be in the heart of its own
+   active frames on the exact frame Aldric's connects. Rolling and blocking
+   are checked first and always win the argument.
+   ========================================================================= */
+const CLASH_SET1 = { slam: 1, buried: 1, spin: 1, charge: 1, sweep: 1 };
+const CLASH_SET2 = { rising: 1, step: 1 };   // the quick shard work just trades
+
+function playerAttackActive() {
+  const a = P.act;
+  if (!a || (a.type !== 'light' && a.type !== 'heavy') || a.charging) return null;
+  const et = a.t - (a.held || 0);
+  const heavy = a.type === 'heavy';
+  const w0 = a.dur * (heavy ? 0.42 : 0.38), w1 = a.dur * (heavy ? 0.64 : 0.68);
+  // only the heart of the swing can catch steel — the edges are too late or too early
+  const c0 = w0 + (w1 - w0) * 0.2, c1 = w0 + (w1 - w0) * 0.8;
+  return (et >= c0 && et <= c1) ? a : null;
+}
+
+/* returns 'clash' | 'win' | 'deflect' | null. Called only when Aldric's blow
+   has already connected geometrically. */
+function tryClash() {
+  if (G.screen !== 'fight') return null;
+  if (playerInvulnerable() || P.blocking) return null;   // the roll and the guard resolve first, always
+  if (!(B.atkSet === 2 ? CLASH_SET2[B.atk] : CLASH_SET1[B.atk])) return null;
+  const a = playerAttackActive();
+  if (!a) return null;
+  if (CH().id === 'blade' && a.type !== 'heavy') return null;   // the light cut trades; only the heavy argues
+
+  const ang = Math.atan2(B.y - P.y, B.x - P.x);
+  const cx = P.x + Math.cos(ang) * (P.r + 22), cy = P.y + Math.sin(ang) * (P.r + 22);
+
+  if (CH().id === 'pair') {                    // two knives cannot stop a maul
+    P.act = { type: 'deflected', t: 0, dur: 0.6 };
+    P.actQueue = null;
+    P.kbX = -Math.cos(ang) * 380; P.kbY = -Math.sin(ang) * 380;
+    G.hitstop = Math.max(G.hitstop, 0.05);
+    G.shake = Math.max(G.shake, 7);
+    rumble(180, 0.5, 0.6);
+    sfx.deflect();
+    clashSparks(cx, cy, 10, false);
+    return 'deflect';
+  }
+
+  if (a.chargeToll) {                          // the fully charged smash does not negotiate
+    a.hit0 = true; a.hitDone = true;
+    const dmg = Math.round(CH().heavyDmg * (1 + (a.chargeT || 0) / CH().chargeMax));
+    damageBoss(dmg, true);
+    B.defBreak += 1;
+    G.dmgNums.push({ x: B.x, y: B.y - B.r - 22, v: 'SUNDERED', t: 0 });
+    breakPoise();
+    B.x += Math.cos(ang) * 34; B.y += Math.sin(ang) * 34;
+    B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
+    B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
+    G.hitstop = Math.max(G.hitstop, 0.16);
+    G.shake = Math.max(G.shake, 18);
+    rumble(600, 1.0, 1.0);
+    sfx.clash();
+    G.rings.push({ x: cx, y: cy, t: 0, dur: 0.5, big: true });
+    clashSparks(cx, cy, 40, true);
+    return 'win';
+  }
+
+  // NEUTRAL CLASH — both blades ring, both bodies give ground
+  P.act = { type: 'clashed', t: 0, dur: 0.35 };
+  P.actQueue = null;
+  P.kbX = -Math.cos(ang) * 320; P.kbY = -Math.sin(ang) * 320;
+  B.state = 'clashed'; B.stateT = 0; B.atk = null; B.tele = 0; B.pushA = ang;
+  G.hitstop = Math.max(G.hitstop, 0.11);
+  G.shake = Math.max(G.shake, 16);
+  rumble(450, 1.0, 1.0);
+  sfx.clash();
+  G.rings.push({ x: cx, y: cy, t: 0, dur: 0.4, big: false });
+  clashSparks(cx, cy, 26, true);
+  return 'clash';
+}
+
+// physics sparks: thrown hard, then dragged down by the world
+function clashSparks(x, y, n, hot) {
+  for (let i = 0; i < n; i++) {
+    if (G.particles.length >= PART_CAP) G.particles.shift();
+    const a = rand(0, Math.PI * 2), v = rand(90, hot ? 380 : 220);
+    G.particles.push({
+      x, y,
+      vx: Math.cos(a) * v, vy: Math.sin(a) * v - rand(30, hot ? 150 : 80),
+      grav: 640,
+      life: rand(0.25, hot ? 0.75 : 0.45), maxLife: 0.75,
+      col: hot ? (i % 3 ? '#ffe9c8' : '#fff6e6') : (i % 2 ? 'rgba(190,182,168,0.8)' : '#c98a52'),
+      size: rand(1.2, hot ? 3 : 2.2)
+    });
+  }
+}
+
 /* Aldric's poise, ended outright rather than chipped away — the charged smash. */
 function breakPoise() {
   if (B.state === 'stagger' || B.state === 'break' || B.state === 'daze' || B.state === 'hesitate') return;
@@ -1561,7 +1672,8 @@ function updatePlayer(dt) {
   let canAct = (!P.act || (P.act.type === 'flask')) && P.blockStun <= 0;
   if (!canAct && C.dashCancel && P.act && Input.peekBuffer() === 'roll' && P.st > 0) {
     const a = P.act;
-    const past = a.t > a.dur * (a.type === 'heavy' ? 0.64 : 0.68);   // the cut is spent; the rest is recovery
+    const cancellable = a.type === 'light' || a.type === 'heavy';
+    const past = cancellable && a.t > a.dur * (a.type === 'heavy' ? 0.64 : 0.68);   // the cut is spent; the rest is recovery
     if (past) canAct = true;                 // the cut has already landed; the rest is just recovery
   }
 
@@ -1826,6 +1938,10 @@ function updatePlayer(dt) {
         }
       }
       if (a.t >= a.dur) P.act = null;
+    } else if (a.type === 'clashed' || a.type === 'deflected') {
+      // knocked off the bind — nothing cancels this, not even the dash
+      speedMul = 0;
+      if (a.t >= a.dur) P.act = null;
     } else if (a.type === 'flask') {
       speedMul = 0.42;
       P.hp = Math.min(P.hpMax, P.hp + 45 * dt / 1.0);
@@ -2083,6 +2199,19 @@ function updateBoss(dt) {
     return;
   }
 
+  if (B.state === 'clashed') {           // steel met steel; both arms are still ringing
+    B.tele = 0;
+    B.wOff = lerp(B.wOff, -1.7, 10 * dt);              // the weapon thrown wide off the bind
+    B.wLen = lerp(B.wLen, B.broken ? 58 : 86, 6 * dt);
+    if (B.stateT < 0.16) {
+      B.x += Math.cos(B.pushA || 0) * 200 * dt; B.y += Math.sin(B.pushA || 0) * 200 * dt;
+      B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
+      B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
+    }
+    if (B.stateT >= 0.5) { B.state = 'idle'; B.cd = 0.55; }   // he recovers a beat behind you
+    return;
+  }
+
   if (B.state === 'daze') {              // he hit the wall at a full charge
     B.dazeT -= dt;
     B.tele = 0;
@@ -2296,11 +2425,18 @@ function updateBoss(dt) {
         if (dist(cx, cy, P.x, P.y) < ph.hit.r + P.r) hit = true;
       }
       if (hit) {
-        // the maul carries his whole first argument; the shard trades weight for speed
-        const scaled = Math.round(ph.dmg * (B.phase2 ? 0.85 : 1.15));
-        const connected = damagePlayer(scaled, B.x, B.y, true, ph.kb || 1);
-        B.hitDone = connected || B.hitDone;
-        if (B.state !== 'attack') { B.phaseStarted = false; return; } // a parry knocked him out of the swing
+        // steel may meet steel before it meets flesh
+        let connected = false;
+        const met = tryClash();
+        if (met) {
+          B.hitDone = true;
+        } else {
+          // the maul carries his whole first argument; the shard trades weight for speed
+          const scaled = Math.round(ph.dmg * (B.phase2 ? 0.85 : 1.15));
+          connected = damagePlayer(scaled, B.x, B.y, true, ph.kb || 1);
+          B.hitDone = connected || B.hitDone;
+        }
+        if (B.state !== 'attack') { B.phaseStarted = false; return; } // a parry or a clash ended the swing
         if (connected && ph.charge) B.phaseT = pdur;                  // the rush stops on a body
       }
       // ground impact feedback once, at start of active
@@ -2360,9 +2496,14 @@ function update(dt) {
   for (let i = G.particles.length - 1; i >= 0; i--) {
     const p = G.particles[i];
     p.x += p.vx * dt; p.y += p.vy * dt;
-    p.vx *= (1 - 4 * dt); p.vy *= (1 - 4 * dt);
+    if (p.grav) p.vy += p.grav * dt;          // clash sparks fall like real sparks
+    else { p.vx *= (1 - 4 * dt); p.vy *= (1 - 4 * dt); }
     p.life -= dt;
     if (p.life <= 0) G.particles.splice(i, 1);
+  }
+  for (let i = G.rings.length - 1; i >= 0; i--) {
+    G.rings[i].t += dt;
+    if (G.rings[i].t > G.rings[i].dur) G.rings.splice(i, 1);
   }
   for (let i = G.slashes.length - 1; i >= 0; i--) {
     G.slashes[i].t += dt;
@@ -2703,6 +2844,23 @@ function drawSlashes() {
   }
 }
 
+function drawRings() {
+  for (const r of G.rings) {
+    const k = r.t / r.dur;
+    const rad = (r.big ? 26 : 15) + k * (r.big ? 150 : 92);
+    ctx.save();
+    ctx.globalAlpha = (1 - k) * (r.big ? 0.9 : 0.7);
+    ctx.strokeStyle = r.big ? '#fff3d8' : '#ffe9c8';
+    ctx.lineWidth = (r.big ? 5 : 3.5) * (1 - k) + 0.8;
+    ctx.beginPath(); ctx.arc(r.x, r.y, rad, 0, Math.PI * 2); ctx.stroke();
+    if (k < 0.35) {                         // the flash at the instant of contact
+      ctx.globalAlpha = (1 - k / 0.35) * 0.85;
+      ctx.drawImage(GLOW_EMBER, r.x - 30, r.y - 30, 60, 60);
+    }
+    ctx.restore();
+  }
+}
+
 function drawParticles() {
   for (const p of G.particles) {
     ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
@@ -2862,6 +3020,11 @@ function drawBladeBody(white) {
       swordLen = 32;
       if (k > 0.25 && k < 1) trailFrom = { ang: swordAng, step: -0.4 * alt, len: swordLen };
     }
+  } else if (P.act && P.act.type === 'clashed') {
+    // thrown high off the bind, wrestled back down by the end of the stun
+    const k = clamp(P.act.t / P.act.dur, 0, 1);
+    swordAng = lerp(-2.35, 0.75, Math.pow(k, 1.7)) + (k < 0.3 ? Math.sin(G.time * 46) * 0.06 : 0);
+    swordLen = 34;
   } else if (P.act && P.act.type === 'parry') {
     swordAng = lerp(0.4, -1.7, clamp(P.act.t / 0.2, 0, 1));
     swordLen = 32;
@@ -3036,6 +3199,12 @@ function drawPairBody(white) {
     else { angL = -sw; lenL = 24; trailSide = -1; trailAng = -sw; }
   } else if (spinning) {
     angR = 0.05; angL = -0.05; lenR = lenL = 25;     // both arms flung out, cutting a full circle
+  } else if (a && a.type === 'deflected') {
+    // both blades slapped wide; he needs the whole recovery to gather them
+    const k = clamp(a.t / a.dur, 0, 1);
+    const fl = lerp(2.35, 0.95, Math.pow(k, 1.5));
+    angR = fl; angL = -fl;
+    lenR = lenL = 23;
   } else if (a && a.type === 'parry') {
     const k = clamp(a.t / 0.2, 0, 1);
     angR = lerp(0.95, -0.35, k); angL = lerp(-0.95, 0.35, k);   // crossed high, edge out
@@ -3907,20 +4076,6 @@ function drawHUD() {
     }
   }
 
-  // chain pips — how far into the string you are, in the character's own colour
-  {
-    const CC = CH(), n = CC.lightChain;
-    const lit = P.chainT > 0 ? (P.chain % n) + 1 : 0;
-    for (let i = 0; i < n; i++) {
-      ctx.save();
-      ctx.translate(252 + i * 13, 53.5);
-      ctx.rotate(Math.PI / 4);
-      if (i < lit) { ctx.fillStyle = CC.accent; ctx.fillRect(-3.2, -3.2, 6.4, 6.4); }
-      else { ctx.strokeStyle = 'rgba(200,208,226,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(-3, -3, 6, 6); }
-      ctx.restore();
-    }
-  }
-
   // flasks
   for (let i = 0; i < P.flaskMax; i++) {
     drawFlask(38 + i * 26, 82, 1, i < P.flasks, i < P.flasks && P.hp / P.hpMax < 0.6);
@@ -4271,6 +4426,7 @@ function drawWorld() {
   drawFissures();
   drawCarving();
   drawSlashes();
+  drawRings();
   // draw whichever is further "back" first, so overlap reads correctly
   if (B.y <= P.y) { drawBoss(); drawPlayer(); } else { drawPlayer(); drawBoss(); }
   drawParticles();
