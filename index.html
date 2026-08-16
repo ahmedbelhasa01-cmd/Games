@@ -968,9 +968,10 @@ const CHARS = [
     accent: '#9fc7ff',
     speed: 158, rollDur: 0.56, rollSpeed: 430,   // grounded; the roll takes a while to end
     iFrames: 0.6,                                // fraction of the roll spent untouchable
+    hpMax: 110, stMax: 115,                      // built to last a full sentence
     poisePerHit: 1.5,                            // four clean hits break his stance
     canBlock: true, dashCancel: false, bleed: false,
-    lightDur: 0.55, lightStam: 26, lightDmg: 44, lightReach: 96, lightHalf: 1.45, lightChain: 3,
+    lightDur: 0.55, lightStam: 26, lightDmg: 44, lightReach: 96, lightHalf: 1.45, lightChain: 4,
     heavyDur: 0.95, heavyStam: 42, heavyDmg: 72, heavyReach: 104, heavyHalf: 1.3,
     chargeMax: 1.6, chargeDrain: 9,
     /* the string: a diagonal cut, the return cut out of its follow-through
@@ -979,8 +980,9 @@ const CHARS = [
     lightStr: [
       { dur: 0.55, dmg: 44, stam: 26, reach: 96, half: 1.45, kind: 'cut', side: 1 },
       { dur: 0.44, dmg: 44, stam: 24, reach: 96, half: 1.45, kind: 'cut', side: -1 },
+      { dur: 0.4, dmg: 40, stam: 22, reach: 96, half: 1.2, kind: 'high', side: 1 },
       { dur: 0.6, dmg: 58, stam: 28, reach: 114, half: 0.72, kind: 'thrust', poise: 2, glide: 210 }
-    ],
+    ],   // and then it begins again — the form is a circle, not a sentence with an end
     /* the overhead smash, and a waist-height reap that carries him through it */
     heavyStr: [
       { dur: 0.95, dmg: 72, stam: 42, reach: 104, half: 1.3, kind: 'smash', charge: true, glide: 150 },
@@ -993,6 +995,7 @@ const CHARS = [
     accent: '#d8654e',
     speed: 200, rollDur: 0.36, rollSpeed: 500,   // never where the swing is
     iFrames: 0.78,                               // the dodge is his whole argument — it commits less and protects more
+    hpMax: 100, stMax: 100,
     poisePerHit: 0.67,                           // nine hits before he staggers
     canBlock: false, dashCancel: true, bleed: true,
     lightDur: 0.26, lightStam: 12, lightDmg: 18, lightReach: 68, lightHalf: 0.95, lightChain: 4,
@@ -1021,6 +1024,8 @@ const P = {  // Nomad
   st: 100, stMax: 100, stDelay: 0, stFlash: 0,
   walkT: 0, trail: [], scarf: [], speedNow: 0, swingAlt: false,
   blocking: false, blockStun: 0, chain: 0, chainT: 0, hchain: 0, hchainT: 0, actQueue: null,
+  resolve: 0,            // the blade's discipline: unbroken until he is hit
+  frenzy: 0, frenzyT: 0, // the pair's madness: fed by cutting, starved by stillness
   ritualCd: 0, coatT: 0,     // the blood ritual: a minute between cuts, thirty seconds of coated steel
   spGauge: 30,           // the answering blow — thirty slow seconds between uses
   flasks: 3, flaskMax: 3,
@@ -1141,9 +1146,11 @@ const ATK2 = {
    ========================================================================= */
 function resetFight() {
   P.x = ARENA.x + 130; P.y = ARENA.y + ARENA.h / 2;
+  P.hpMax = CH().hpMax; P.stMax = CH().stMax;   // sized before they are filled
   P.hp = P.hpMax; P.hpGhost = P.hpMax; P.st = P.stMax; P.stDelay = 0; P.stFlash = 0;
   P.walkT = 0; P.trail.length = 0; P.speedNow = 0; P.blocking = false;
   P.blockStun = 0; P.chain = 0; P.chainT = 0; P.hchain = 0; P.hchainT = 0; P.actQueue = null;
+  P.resolve = 0; P.frenzy = 0; P.frenzyT = 0;
   P.ritualCd = 0; P.coatT = 0; P.spGauge = SP_MAX;
   P.scarf = []; for (let i = 0; i < 6; i++) P.scarf.push({ x: P.x, y: P.y });
   P.flaskMax = flaskAllowance();
@@ -1318,6 +1325,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
         G.hitstop = Math.max(G.hitstop, 0.035);
         G.shake = Math.max(G.shake, 4);
         sfx.block();
+        P.resolve = Math.min(10, P.resolve + 0.5);   // the guard held — that too is form
         P.blockStun = 0.2;                   // shoved back onto your heels for a beat
         rumble(90, 0.3, 0.5);
         if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deathX = P.x; P.deathY = P.y; P.deathFace = P.face; killPlayer(); }
@@ -1325,6 +1333,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
       }
       // not enough stamina behind the shield-arm — GUARD BREAK
       P.st = -25; P.stDelay = 0.9;
+      P.resolve = 0;
       dmg = Math.round(dmg * 0.5);
       P.hp -= dmg;
       P.flash = 0.12;
@@ -1341,6 +1350,8 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
       return true;
     }
   }
+  if (CH().id === 'pair' && P.frenzy >= 8) dmg = Math.round(dmg * 1.15);   // he refused the world; it did not refuse him
+  P.resolve = 0;                              // discipline is unbroken until it is broken
   P.hp -= dmg;
   P.flash = 0.12;
   P.hurtInv = 0.45;
@@ -1621,10 +1632,16 @@ function updatePlayer(dt) {
     } else sfx.flaskEmpty();
   }
 
+  // frenzy starves in stillness; resolve simply waits
+  P.frenzyT = Math.max(0, P.frenzyT - dt);
+  if (P.frenzy > 0 && P.frenzyT <= 0) { P.frenzy--; P.frenzyT = 0.6; }
+
   /* ---- run current action ---- */
   let speedMul = 1;
   if (P.act) {
-    P.act.t += dt;
+    const hasten = (CH().id === 'pair' && (P.act.type === 'light' || P.act.type === 'heavy'))
+      ? 1 + 0.04 * P.frenzy : 1;                 // madness moves the hands faster
+    P.act.t += dt * hasten;
     const a = P.act;
     if (a.type === 'roll') {
       const k = a.t / a.dur;
@@ -1699,7 +1716,15 @@ function updatePlayer(dt) {
           const hitR = B.r + (B.phase2 ? 15 : 0);   // he is smaller in phase 2; your reach is not
           if (d < reach + hitR && Math.abs(angDiff(a.face, Math.atan2(B.y - P.y, B.x - P.x))) < half + Math.asin(clamp(hitR / Math.max(d, hitR), 0, 1))) {
             a['hit' + ci] = true; a.hitDone = true;
-            damageBoss(Math.round(base / cuts * power));
+            let out = base / cuts * power;
+            if (C.id === 'pair') {
+              out *= rand(0.78, 1.3);            // a madman never swings the same cut twice
+              P.frenzy = Math.min(8, P.frenzy + 1); P.frenzyT = 2.0;
+            } else {
+              out *= 1 + 0.012 * P.resolve;      // form, compounding quietly
+              P.resolve = Math.min(10, P.resolve + 1);
+            }
+            damageBoss(Math.round(out));
             if (spec.poise) B.poise += CH().poisePerHit * (spec.poise - 1);   // the thrust lands like a hammer
             if (spec.bleed2) addBleed();                                      // the scissor banks its debt twice
             if (spec.kind === 'thrust' || spec.kind === 'scissor') {
@@ -1731,6 +1756,10 @@ function updatePlayer(dt) {
           const col = C.id === 'pair' ? '#e8ddc8' : '#dfe6f2';
           const arcHalf = spec.kind === 'thrust' ? 0.5 : half * (C.id === 'pair' ? 0.8 : 1.05);
           addSlash(P.x, P.y, a.face + (ci ? 0.5 : -0.2) * (cuts > 1 ? 1 : 0), reach, arcHalf, col, C.id === 'pair' ? 0.11 : 0.18);
+          if (C.id === 'pair' && P.frenzy >= 5) {
+            // flourishes that cut nothing — the madness spilling past the target
+            addSlash(P.x, P.y, a.face + rand(-1.4, 1.4), reach * rand(0.5, 0.8), 0.4, 'rgba(216,101,78,0.7)', 0.09);
+          }
         }
       }
       if (!a.charging && a.t >= a.dur + held) {
@@ -1795,7 +1824,8 @@ function updatePlayer(dt) {
   /* ---- movement ---- */
   P.speedNow = 0;
   if (speedMul > 0 || !P.act) {
-    const base = sprinting ? C.speed * 1.5 : (P.blocking ? C.speed * 0.55 : C.speed);
+    const quick = C.id === 'pair' ? 1 + 0.02 * P.frenzy : 1;
+    const base = (sprinting ? C.speed * 1.5 : (P.blocking ? C.speed * 0.55 : C.speed)) * quick;
     const sp = base * mag * (P.act ? speedMul : 1);
     P.x += mvX * sp * dt; P.y += mvY * sp * dt;
     P.walkT += sp * dt * 0.05;
@@ -1817,7 +1847,8 @@ function updatePlayer(dt) {
 
   /* ---- stamina regen: delayed, never while sprinting or mid-action ---- */
   P.stDelay = Math.max(0, P.stDelay - dt);
-  if (P.stDelay <= 0 && !sprinting && !P.act) P.st = Math.min(P.stMax, P.st + 25 * (P.blocking ? 0.4 : 1) * dt);
+  const regen = 25 * (1 + (CH().id === 'blade' ? 0.035 * P.resolve : 0));
+  if (P.stDelay <= 0 && !sprinting && !P.act) P.st = Math.min(P.stMax, P.st + regen * (P.blocking ? 0.4 : 1) * dt);
 
   // clamp to arena
   P.x = clamp(P.x, ARENA.x + P.r, ARENA.x + ARENA.w - P.r);
@@ -1877,7 +1908,7 @@ function chooseAttack2(d) {
   return pickWeighted([
     ['thrust', 1.0],
     ['step',   pair ? (d > 170 ? 0.9 : 0.35) : (d > 150 ? 2.0 : 1.1)],
-    ['feint',  pair ? 1.3 : 0.6],                       // he is fast enough to fall for a false start
+    ['feint',  (pair ? 1.3 : 0.6) * (P.frenzy >= 6 ? 1.8 : 1)],   // and a frenzied man falls for anything
     ['flurry', pair ? 1.7 : 0.5],                       // three cuts cover three places at once
     ['rising', pair ? 0.4 : 1.4]                        // the rising tear catches a slow guard
   ]);
@@ -2286,7 +2317,8 @@ function updateBoss(dt) {
           B.state = 'idle'; B.stateT = 0;
           B.cd = B.phase2 ? rand(0.25, 0.65) : rand(0.8, 1.35);
           // a third of the time he disengages a step — resets the spacing, reads alive
-          if (Math.random() < 0.35) B.hopT = B.phase2 ? 0.24 : 0.18;
+          const shy = P.frenzy >= 6 ? 0.6 : 0.35;   // he will not trade with a man who has stopped caring
+          if (Math.random() < shy) B.hopT = B.phase2 ? 0.24 : 0.18;
         }
       } else {
         B.phaseDur = atk.phases[B.phaseIdx].d;
@@ -2792,6 +2824,12 @@ function drawBladeBody(white) {
       swordAng = lerp(2.4, -2.2, e);
       swordLen = 37;
       if (e > 0.28 && e < 1) trailFrom = { ang: swordAng, step: 0.5, len: swordLen };
+    } else if (kind === 'high') {
+      // lifted out of the return cut and brought down steep across the collar
+      const k = clamp(P.act.t / (P.act.dur * 0.6), 0, 1);
+      swordAng = lerp(-2.15, 0.95, k * k);
+      swordLen = 33;
+      if (k > 0.3 && k < 1) trailFrom = { ang: swordAng, step: -0.36, len: swordLen };
     } else if (kind === 'thrust') {
       // gathered back over the hip, then driven straight through the line
       const k = P.act.t / P.act.dur;
@@ -2885,6 +2923,7 @@ function drawPairBody(white) {
   const sway = Math.sin(P.walkT * 1.25) * 1.9 + idleBob;
   ctx.translate(0, sway);
   ctx.rotate(sprintingNow ? 0.14 : 0.05);          // always leaning into it
+  if (P.frenzy >= 4 && !P.act) ctx.rotate((Math.random() - 0.5) * 0.012 * P.frenzy);   // he cannot hold still
 
   const a = P.act;
   const pKind = (a && a.spec && a.spec.kind) || '';
@@ -2953,12 +2992,14 @@ function drawPairBody(white) {
   if (!white) {
     ctx.fillStyle = '#100d0c';                      // the shadow under the hood
     ctx.beginPath(); ctx.ellipse(7.5, 0, 4.6, 4.4, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 0.5;
-    ctx.drawImage(GLOW_RED, 4, -6, 12, 12);
+    const mad = P.frenzy / 8;
+    ctx.globalAlpha = 0.5 + mad * 0.4;
+    ctx.drawImage(GLOW_RED, 4 - mad * 3, -6 - mad * 3, 12 + mad * 6, 12 + mad * 6);
     ctx.globalAlpha = 1;
-    ctx.fillStyle = 'rgba(226,124,100,0.85)';       // two dull points, no face
-    ctx.beginPath(); ctx.arc(8.6, -1.7, 0.95, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(8.6, 1.7, 0.95, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(${226 + Math.round(mad * 24)},${124 - Math.round(mad * 40)},${100 - Math.round(mad * 40)},${0.85 + mad * 0.15})`;
+    const er = 0.95 + mad * 0.45;                   // two points, brightening as he goes
+    ctx.beginPath(); ctx.arc(8.6, -1.7, er, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(8.6, 1.7, er, 0, Math.PI * 2); ctx.fill();
   }
 
   // TWO blades. Whichever hand is cutting sweeps; the other stays low and ready.
@@ -3003,7 +3044,7 @@ function drawPairBody(white) {
       ctx.save();
       ctx.globalAlpha = 0.3 - i * 0.06;
       ctx.translate(2, trailSide * 8);
-      ctx.rotate(trailAng - trailSide * 0.26 * i);
+      ctx.rotate(trailAng - trailSide * 0.26 * i + (Math.random() - 0.5) * 0.02 * P.frenzy);
       ctx.strokeStyle = '#e8ddc8';
       ctx.lineWidth = 1.1;
       ctx.beginPath(); ctx.moveTo(3, 0); ctx.lineTo(trailSide > 0 ? 24 : 24, 0); ctx.stroke();
@@ -3820,6 +3861,30 @@ function drawHUD() {
       ctx.fillStyle = '#d8654e'; ctx.fillRect(-2.8, -2.8, 5.6, 5.6);
       ctx.restore();
     }
+    // FRENZY — eight small teeth, lighting up as the madness rises
+    for (let i = 0; i < 8; i++) {
+      const lit = i < P.frenzy;
+      const fy2 = 66 + (lit && P.frenzy >= 6 ? Math.sin(G.time * 16 + i * 2) * 1.2 : 0);
+      ctx.fillStyle = lit
+        ? (P.frenzy >= 8 ? `rgba(240,80,58,${0.7 + 0.3 * Math.sin(G.time * 12 + i)})` : 'rgba(216,101,78,0.9)')
+        : 'rgba(90,52,44,0.45)';
+      ctx.fillRect(196 + i * 8, fy2, 4, 7);
+    }
+  } else {
+    // RESOLVE — the same slot, but a still, pale seam: discipline holds the line
+    const k = clamp(P.resolve / 10, 0, 1);
+    ctx.fillStyle = 'rgba(6,7,11,0.8)';
+    ctx.fillRect(26, 68, 150, 3);
+    if (k > 0) {
+      ctx.fillStyle = k >= 1 ? `rgba(200,224,255,${0.8 + 0.2 * Math.sin(G.time * 4)})` : 'rgba(140,172,220,0.85)';
+      ctx.fillRect(26, 68, 150 * k, 3);
+    }
+    if (k >= 1) {
+      ctx.save();
+      ctx.translate(182, 69.5); ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = '#c8e0ff'; ctx.fillRect(-2.8, -2.8, 5.6, 5.6);
+      ctx.restore();
+    }
   }
 
   // chain pips — how far into the string you are, in the character's own colour
@@ -4199,6 +4264,16 @@ function drawWorld() {
   ctx.fillRect(0, 0, W, H);
 
   ctx.restore();
+
+  // at full frenzy the edges of the world breathe red — he is barely in it
+  if (CH().id === 'pair' && P.frenzy >= 7 && G.screen === 'fight' && !P.dead) {
+    const hz = (P.frenzy >= 8 ? 0.1 : 0.05) * (0.75 + 0.25 * Math.sin(G.time * 5.2));
+    const rg = ctx.createRadialGradient(W / 2, H / 2, 300, W / 2, H / 2, 560);
+    rg.addColorStop(0, 'rgba(160,30,20,0)');
+    rg.addColorStop(1, `rgba(160,30,20,${hz})`);
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, W, H);
+  }
 
   // the world slows and desaturates on the killing blow
   if (G.slowmo > 0) {
