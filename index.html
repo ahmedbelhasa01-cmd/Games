@@ -295,6 +295,11 @@ const sfx = {
     _tone(ac, 'sawtooth', 220 + Math.random() * 120, 140, 0.2, 0.05, t);
   }); },
   chargeFull() { this._run((ac, t) => { _tone(ac, 'sine', 660, 720, 0.14, 0.16, t); _tone(ac, 'sine', 990, 1020, 0.18, 0.1, t + 0.04); }); },
+  learn() { this._run((ac, t) => {         // recognition, not regret: a low tone that rises
+    _tone(ac, 'sine', 128, 148, 0.75, 0.2, t, AudioSys.voiceBus);
+    _tone(ac, 'sine', 192, 224, 0.6, 0.12, t + 0.14, AudioSys.voiceBus);
+    _tone(ac, 'sine', 64, 74, 0.8, 0.14, t, AudioSys.voiceBus);
+  }); },
   read() { this._run((ac, t) => {          // a sharp intake — he has seen it
     _tone(ac, 'square', 1150, 1500, 0.07, 0.16, t);
     _noise(ac, 0.16, 'highpass', 2200, 3600, 0.22, t);
@@ -1035,6 +1040,95 @@ const CHARS = [
 function CH() { return CHARS[G.charIdx] || CHARS[0]; }
 const SP_MAX = 30;     // seconds for the answering blow to come back
 
+/* =========================================================================
+   HE TRAINED YOU. The ledger of your habits — kept per character, carried
+   across deaths, burned on victory. He never grows stronger from it; he
+   only grows less surprised. At most two lessons per attempt, none before
+   five clean observations, and every lesson is announced by the pause.
+   ========================================================================= */
+const HABITS = {
+  data: null, storageOk: true,
+  adopted: [],           // lessons active THIS attempt (two at most)
+  pending: null,         // a lesson waiting for its moment
+  checkT: 3,
+
+  key() { return 'ashen_habits_' + CH().id; },
+  blank() {
+    return { roll: { L: 0, R: 0, K: 0 }, punish: 0, flask: [], near: 0, far: 0,
+             block: 0, rolls: 0, chargeRec: 0, dc: [0, 0, 0, 0], orbit: { cw: 0, ccw: 0 } };
+  },
+  load() {
+    let d = null;
+    try { const raw = localStorage.getItem(this.key()); if (raw) d = JSON.parse(raw); }
+    catch (e) { this.storageOk = false; }
+    this.data = Object.assign(this.blank(), d || {});
+  },
+  save() {
+    if (!this.data) return;
+    try { localStorage.setItem(this.key(), JSON.stringify(this.data)); }
+    catch (e) { this.storageOk = false; }
+  },
+  clear() {                              // victory: the ledger burns, both pages
+    this.data = this.blank();
+    try { localStorage.removeItem('ashen_habits_blade'); localStorage.removeItem('ashen_habits_pair'); }
+    catch (e) {}
+  },
+
+  qualified(id) {
+    const d = this.data; if (!d) return false;
+    switch (id) {
+      case 'rollDir': {
+        const m = Math.max(d.roll.L, d.roll.R, d.roll.K), t = d.roll.L + d.roll.R + d.roll.K;
+        return m >= 5 && m / t > 0.55;
+      }
+      case 'punish': return d.punish >= 5;
+      case 'flask': {
+        if (d.flask.length < 5) return false;
+        const m = d.flask.reduce((a, b) => a + b, 0) / d.flask.length;
+        const v = Math.sqrt(d.flask.reduce((a, b) => a + (b - m) * (b - m), 0) / d.flask.length);
+        return v < 0.12;
+      }
+      case 'spacing': { const t = d.near + d.far; return t >= 20 && (d.near / t > 0.7 || d.far / t > 0.7); }
+      case 'block': return CH().id === 'blade' && d.block >= 5 && d.block > d.rolls * 0.8;
+      case 'charge': return CH().id === 'blade' && d.chargeRec >= 5;
+      case 'dc': {
+        if (CH().id !== 'pair') return false;
+        const m = Math.max(...d.dc), t = d.dc.reduce((a, b) => a + b, 0);
+        return m >= 5 && m / t > 0.6;
+      }
+      case 'orbit': {
+        if (CH().id !== 'pair') return false;
+        const t = d.orbit.cw + d.orbit.ccw;
+        return t >= 12 && Math.max(d.orbit.cw, d.orbit.ccw) / t > 0.72;
+      }
+    }
+    return false;
+  },
+  candidates() {
+    return CH().id === 'blade'
+      ? ['rollDir', 'punish', 'flask', 'spacing', 'block', 'charge']
+      : ['rollDir', 'punish', 'flask', 'spacing', 'dc', 'orbit'];
+  },
+  glance(dt) {
+    if (this.adopted.length >= 2 || this.pending) return;
+    this.checkT -= dt;
+    if (this.checkT > 0) return;
+    this.checkT = 2.5;
+    for (const id of this.candidates()) {
+      if (!this.adopted.includes(id) && this.qualified(id)) { this.pending = id; break; }
+    }
+  },
+  has(id) { return this.adopted.includes(id); },
+
+  rollLead() { const r = this.data.roll; return (r.R >= r.L ? -1 : 1) * 0.3; },
+  flaskAt() { const f = this.data.flask; return f.reduce((a, b) => a + b, 0) / Math.max(1, f.length); },
+  spacingKind() { return this.data.near >= this.data.far ? 'near' : 'far'; },
+  dcIndex() { return this.data.dc.indexOf(Math.max(...this.data.dc)); },
+  orbitSign() { return this.data.orbit.cw >= this.data.orbit.ccw ? 1 : -1; }
+};
+
+
+
 const P = {  // Nomad
   x: 0, y: 0, r: 13,
   hp: 100, hpMax: 100, hpGhost: 100,
@@ -1183,6 +1277,9 @@ function resetFight() {
   B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0; B.readCd = 0;
   B.hesitated = false; B.mourned = false; B.coreDim = 0; B.guarding = false;
   B.hopT = 0; B.weaveSeed = Math.random() * 10;
+  B.buriedFake = false; B.obsT = 0.5; B.lastPAng = undefined;
+  HABITS.adopted = []; HABITS.pending = null; HABITS.checkT = 3;
+  HABITS.load();                          // the ledger for whoever stands at the gate
 
   G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0; G.rings.length = 0;
   G.fissures.length = 0; G.debris = null; G.shedPlates = []; B.r = 34;
@@ -1342,6 +1439,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
         G.hitstop = Math.max(G.hitstop, 0.035);
         G.shake = Math.max(G.shake, 4);
         sfx.block();
+        if (HABITS.data) HABITS.data.block++;
         P.resolve = Math.min(10, P.resolve + 0.5);   // the guard held — that too is form
         P.blockStun = 0.2;                   // shoved back onto your heels for a beat
         rumble(90, 0.3, 0.5);
@@ -1391,6 +1489,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
 function killPlayer() {
   P.act = null;
   G.deaths++;
+  HABITS.save();                          // he writes down what he saw
   G.hitstop = Math.max(G.hitstop, 0.2);   // the world catches its breath as he goes down
   sfx.helmSigh();
   sfx.bell();
@@ -1443,6 +1542,7 @@ function damageBoss(dmg, noBleed) {
     sfx.deathCry();              // on the voice bus; the room clears out from under it
     AudioSys.duck(0.045, 0.18);
     spawnParticles(B.x, B.y, 34, '#ffe9a8', 260, 0.9);
+    HABITS.clear();                        // a new run starts clean — both pages of the ledger
     startCarve();
   }
 }
@@ -1687,6 +1787,24 @@ function updatePlayer(dt) {
         if (P.locked) { const a = Math.atan2(P.y - B.y, P.x - B.x); dx = Math.cos(a); dy = Math.sin(a); }
         else { dx = Math.cos(P.face); dy = Math.sin(P.face); }
       } else { dx = mvX / (Math.hypot(mvX, mvY) || 1); dy = mvY / (Math.hypot(mvX, mvY) || 1); }
+      /* he watches which way you leave, and out of what */
+      const wasCancel = P.act && (P.act.type === 'light' || P.act.type === 'heavy');
+      if (HABITS.data) {
+        const dd = dist(P.x, P.y, B.x, B.y) || 1;
+        const ux = (B.x - P.x) / dd, uy = (B.y - P.y) / dd;
+        const dot = dx * ux + dy * uy, cross = ux * dy - uy * dx;
+        if (dot < -0.45) HABITS.data.roll.K++;
+        else if (cross > 0) HABITS.data.roll.R++;
+        else HABITS.data.roll.L++;
+        HABITS.data.rolls++;
+        if (wasCancel && C.dashCancel) {
+          const ci = clamp(P.chain, 0, 3);
+          HABITS.data.dc[ci]++;
+          // the answer to a rhythm he has memorized arrives on the beat
+          if (HABITS.has('dc') && ci === HABITS.dcIndex() && dist(P.x, P.y, B.x, B.y) < 260
+              && B.state === 'idle') B.cd = Math.min(B.cd, 0.12);
+        }
+      }
       P.act = { type: 'roll', t: 0, dur: C.rollDur, dirX: dx, dirY: dy };
       P.actQueue = null;
       sfx.roll(C.id === 'pair');
@@ -1722,6 +1840,7 @@ function updatePlayer(dt) {
         P.chainT = 0.6;
       }
       const spec = str[heavy ? P.hchain : P.chain];
+      if (HABITS.data && (B.state === 'stagger' || B.state === 'daze')) HABITS.data.punish++;
       spendStamina(spec.stam);
       if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
       P.swingAlt = !P.swingAlt;
@@ -1739,6 +1858,7 @@ function updatePlayer(dt) {
   if (Input.flask && !P.act && G.screen === 'fight') {
     if (P.flasks > 0) {
       P.flasks -= 1;
+      if (HABITS.data) { HABITS.data.flask.push(P.hp / P.hpMax); if (HABITS.data.flask.length > 10) HABITS.data.flask.shift(); }
       P.act = { type: 'flask', t: 0, dur: 1.0 };
       sfx.gulp();
     } else sfx.flaskEmpty();
@@ -1807,6 +1927,13 @@ function updatePlayer(dt) {
           if (!Input.heavyHeld) a.charging = false;
           else {
             a.chargeT = Math.min(C.chargeMax, a.chargeT + dt);
+            if (!a.chargeObs && a.chargeT > 0.3 && HABITS.data) {
+              a.chargeObs = true;
+              const bAtk = B.state === 'attack' && B.atk && (B.atkSet === 2 ? ATK2 : ATK1)[B.atk];
+              const inRec = (bAtk && bAtk.phases[B.phaseIdx] && bAtk.phases[B.phaseIdx].k === 'r')
+                || (B.state === 'idle' && B.cd > 0.35);
+              if (inRec) HABITS.data.chargeRec++;
+            }
             P.st = Math.max(-25, P.st - C.chargeDrain * dt); P.stDelay = 0.7;
             if (a.chargeT >= C.chargeMax || P.st <= 0) {
               if (!a.chargeToll && a.chargeT >= C.chargeMax) { a.chargeToll = true; sfx.chargeFull(); }
@@ -2002,6 +2129,8 @@ function updatePlayer(dt) {
    ========================================================================= */
 function currentSet() { return B.phase2 ? ATK2 : ATK1; }
 function bossStartAttack(name) {
+  // he has seen you dive at the stuck maul five times; sometimes now the struggle is theatre
+  B.buriedFake = name === 'buried' && HABITS.has('punish') && Math.random() < 0.45;
   const set = currentSet();
   B.atk = name; B.atkSet = B.phase2 ? 2 : 1;
   B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
@@ -2023,12 +2152,15 @@ function chooseAttack1(d) {
   const pair = CH().id === 'pair';
   if (!pair && d > 260 && Math.random() < 0.8) return 'charge';
   if (pair && d > 300 && Math.random() < 0.6) return 'charge';
+  // what he has learned bends the odds — the attacks themselves never change
+  const spc = HABITS.has('spacing') ? HABITS.spacingKind() : null;
+  const guard = HABITS.has('block');
   return pickWeighted([
-    ['slam',   pair ? 1.9 : 0.7],                       // fissures deny the ground he dances on
-    ['buried', pair ? 1.1 : 0.6],
+    ['slam',   (pair ? 1.9 : 0.7) * (spc === 'near' ? 1.6 : 1) * (guard ? 1.3 : 1)],
+    ['buried', (pair ? 1.1 : 0.6) * (spc === 'near' ? 1.4 : 1)],
     ['spin',   pair ? 1.6 : 0.7],                       // he likes standing beside him; the spin says no
-    ['sweep',  pair ? (d < 170 ? 1.0 : 0.3) : (d < 150 ? 1.5 : 0.55)],
-    ['charge', pair ? 0.05 : (d > 190 ? 0.9 : 0.15)]
+    ['sweep',  (pair ? (d < 170 ? 1.0 : 0.3) : (d < 150 ? 1.5 : 0.55)) * (guard ? 1.8 : 1)],
+    ['charge', (pair ? 0.05 : (d > 190 ? 0.9 : 0.15)) * (spc === 'far' ? 2.2 : 1)]
   ]);
 }
 function chooseAttack2(d) {
@@ -2041,7 +2173,7 @@ function chooseAttack2(d) {
     ['step',   pair ? (d > 170 ? 0.9 : 0.35) : (d > 150 ? 2.0 : 1.1)],
     ['feint',  (pair ? 1.3 : 0.6) * (P.frenzy >= 6 ? 1.8 : 1)],   // and a frenzied man falls for anything
     ['flurry', pair ? 1.7 : 0.5],                       // three cuts cover three places at once
-    ['rising', pair ? 0.4 : 1.4]                        // the rising tear catches a slow guard
+    ['rising', (pair ? 0.4 : 1.4) * (HABITS.has('block') ? 1.7 : 1)]   // the rising tear catches a slow guard
   ]);
 }
 
@@ -2066,6 +2198,23 @@ function updateBoss(dt) {
   }
   B.readCd = Math.max(0, B.readCd - dt);
   B.stateT += dt;
+
+  /* ---- he watches: spacing and orbit, sampled every half second ---- */
+  if (HABITS.data && G.screen === 'fight' && !P.dead && !G.cinematic) {
+    B.obsT = (B.obsT || 0) - dt;
+    if (B.obsT <= 0) {
+      B.obsT = 0.5;
+      const d0 = dist(P.x, P.y, B.x, B.y);
+      if (d0 < 150) HABITS.data.near++; else if (d0 > 210) HABITS.data.far++;
+      const angNow = Math.atan2(P.y - B.y, P.x - B.x);
+      if (B.lastPAng !== undefined && P.speedNow > 40) {
+        const dAng = angDiff(angNow, B.lastPAng);
+        if (Math.abs(dAng) > 0.02) { if (dAng > 0) HABITS.data.orbit.cw++; else HABITS.data.orbit.ccw++; }
+      }
+      B.lastPAng = angNow;
+    }
+    HABITS.glance(dt);
+  }
 
   // phase-2 embers drift off him
   if (B.phase2 && B.state !== 'dying' && B.state !== 'carve' && Math.random() < dt * 8) {
@@ -2199,6 +2348,18 @@ function updateBoss(dt) {
     return;
   }
 
+  if (B.state === 'learn') {             // he has seen enough of you
+    B.tele = 0;
+    B.wOff = lerp(B.wOff, 1.25, 5 * dt);                     // the weapon comes down
+    B.wLen = lerp(B.wLen, B.broken ? 50 : 74, 5 * dt);
+    B.face = turnToward(B.face, angToP, 7 * dt);             // and the head follows you, wherever you go
+    if (B.stateT >= 0.8) {
+      if (HABITS.pending) { HABITS.adopted.push(HABITS.pending); HABITS.pending = null; HABITS.save(); }
+      B.state = 'idle'; B.cd = 0.6;
+    }
+    return;
+  }
+
   if (B.state === 'clashed') {           // steel met steel; both arms are still ringing
     B.tele = 0;
     B.wOff = lerp(B.wOff, -1.7, 10 * dt);              // the weapon thrown wide off the bind
@@ -2283,12 +2444,17 @@ function updateBoss(dt) {
       B.wOff = lerp(B.wOff, passive ? 1.05 : 0.5, 4 * dt);
       B.wLen = lerp(B.wLen, 86, 4 * dt);
       B.face = turnToward(B.face, angToP, 3.0 * dt);
+      /* he knows when you drink: as your health nears the number he has
+         memorized, he stops waiting — the same feet, pointed at you sooner */
+      const thirsty = HABITS.has('flask') && P.hp / P.hpMax < HABITS.flaskAt() + 0.05;
+      if (HABITS.has('flask') && P.act && P.act.type === 'flask' && d < 260) B.cd = Math.min(B.cd, 0.05);
+      if (HABITS.has('charge') && P.act && P.act.charging && P.act.chargeT > 0.2) B.cd = Math.min(B.cd, 0.3);
       if (B.hopT > 0) {                    // the disengaging step
         B.hopT -= dt;
         B.x -= Math.cos(angToP) * 240 * dt; B.y -= Math.sin(angToP) * 240 * dt;
         if (Math.random() < dt * 20) spawnDrift(B.x - Math.cos(angToP) * 20, B.y + 8, rand(-8, 8), rand(-14, -4), 'rgba(150,146,138,0.4)', 0.4, 2);
       }
-      const gap = preferredGap();
+      const gap = preferredGap() * (thirsty ? 0.55 : 1);
       if (d > (passive ? 250 : 165) * gap) {
         const sp = d > 300 ? 162 : 112;
         const weave = Math.sin(G.time * 1.4 + B.weaveSeed) * 0.5;   // he closes at an angle, not on rails
@@ -2298,6 +2464,12 @@ function updateBoss(dt) {
         if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.8, 1.8); }
         const sa = angToP + Math.PI / 2 * B.strafeDir;
         B.x += Math.cos(sa) * (passive ? 68 : 52) * dt; B.y += Math.sin(sa) * (passive ? 68 : 52) * dt;
+      }
+      // a lesson waits for a quiet beat — never inside the break's shadow
+      if (HABITS.pending && B.hp > B.hpMax * 0.56 && !G.cinematic) {
+        B.state = 'learn'; B.stateT = 0;
+        sfx.learn();
+        return;
       }
       B.cd -= dt * (passive ? 0.15 : 1);
       if (B.cd <= 0) {
@@ -2309,12 +2481,14 @@ function updateBoss(dt) {
       B.wOff = lerp(B.wOff, 0.35, 5 * dt);   // low stance, blade forward and level
       B.wLen = lerp(B.wLen, 58, 5 * dt);
       B.face = turnToward(B.face, angToP, 4.2 * dt);
+      const thirsty2 = HABITS.has('flask') && P.hp / P.hpMax < HABITS.flaskAt() + 0.05;
+      if (HABITS.has('flask') && P.act && P.act.type === 'flask' && d < 260) B.cd = Math.min(B.cd, 0.05);
       if (B.hopT > 0) {
         B.hopT -= dt;
         B.x -= Math.cos(angToP) * 300 * dt; B.y -= Math.sin(angToP) * 300 * dt;
         if (Math.random() < dt * 24) spawnDrift(B.x - Math.cos(angToP) * 16, B.y + 6, rand(-8, 8), rand(-14, -4), 'rgba(150,146,138,0.4)', 0.35, 2);
       }
-      if (d > 140 * preferredGap()) {
+      if (d > 140 * preferredGap() * (thirsty2 ? 0.55 : 1)) {
         const weave = Math.sin(G.time * 2.1 + B.weaveSeed) * 0.55;
         B.x += Math.cos(angToP + weave) * 175 * dt; B.y += Math.sin(angToP + weave) * 175 * dt;
       } else {
@@ -2329,6 +2503,12 @@ function updateBoss(dt) {
         B.state = 'read'; B.stateT = 0; B.readCd = 5.0;
         B.atk = null;
         sfx.read();
+        return;
+      }
+      // a lesson waits its turn — never while the hesitation is owed or near
+      if (HABITS.pending && (B.hesitated || P.hp > P.hpMax * 0.45) && !G.cinematic) {
+        B.state = 'learn'; B.stateT = 0;
+        sfx.learn();
         return;
       }
       B.cd -= dt;
@@ -2362,9 +2542,18 @@ function updateBoss(dt) {
     else if (ph.k === 'a') B.tele = Math.max(0, B.tele - 8 * dt);
     else B.tele = Math.max(0, B.tele - 6 * dt);
 
-    // tracking during windups/gaps only — active phases are committed
+    // tracking during windups/gaps only — active phases are committed.
+    // what he has learned leans the point of aim toward where you will be.
     if ((ph.k === 'w' || ph.k === 'g') && ph.track) {
-      B.face = turnToward(B.face, angToP, ph.track * dt);
+      let lead = 0;
+      if (HABITS.has('rollDir') && (B.atk === 'sweep' || B.atk === 'spin')) lead += HABITS.rollLead();
+      if (HABITS.has('orbit')) lead += HABITS.orbitSign() * 0.35;
+      B.face = turnToward(B.face, angToP + lead, ph.track * dt);
+    }
+
+    // he has learned when you wind the charge: his recovery ends the moment it starts
+    if (ph.k === 'r' && HABITS.has('charge') && P.act && P.act.charging && P.act.chargeT > 0.2) {
+      B.phaseT = pdur;
     }
 
     // movement within a phase
@@ -2475,6 +2664,7 @@ function updateBoss(dt) {
         }
       } else {
         B.phaseDur = atk.phases[B.phaseIdx].d;
+        if (B.buriedFake && atk.phases[B.phaseIdx].buried) B.phaseDur *= 0.3;   // the struggle was theatre
       }
     }
   }
@@ -3744,6 +3934,7 @@ function drawBoss() {
   if (!white) {
     let eg = B.broken ? 1 : 0.62;
     eg *= (1 - 0.8 * B.coreDim);
+    if (B.state === 'learn') eg = 1.5 + 0.5 * Math.sin(G.time * 9);   // the ember eyes flare: he is reading you
     const flick = eg * (0.85 + 0.15 * Math.sin(G.time * 13));
     ctx.globalAlpha = alpha * 0.6 * flick;
     ctx.drawImage(GLOW_EMBER, -6, -16, 32, 32);
@@ -4571,7 +4762,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, camKick, onParrySuccess, bossStartAttack, ATK1, ATK2, CHARS, CH, SP_MAX, startCarve };
+window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, camKick, onParrySuccess, bossStartAttack, ATK1, ATK2, CHARS, CH, SP_MAX, HABITS, startCarve };
 </script>
 </body>
 </html>
