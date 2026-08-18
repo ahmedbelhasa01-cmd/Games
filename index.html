@@ -1290,9 +1290,9 @@ function resetFight() {
   AudioSys.duck(0.45, 0.2);
 }
 
-/* The gate is not merciless: each few failed attempts leaves one more
-   draught in the flask belt. Never mentioned, only visible in the HUD. */
-function flaskAllowance() { return 3 + Math.min(2, Math.floor(G.deaths / 3)); }
+/* Three draughts. The gate does not soften for anyone, however many
+   times they come back to it. */
+function flaskAllowance() { return 3; }
 
 /* ---------- camera: a slow drift toward the action, pushed in for the beats ---------- */
 function camKick(ang, amt) {
