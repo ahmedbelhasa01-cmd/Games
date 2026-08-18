@@ -27,7 +27,7 @@ const RING = { x: 336, y: 338 };      // the worn practice ring
    the people standing on it do not. SQUASH is that compression, pivoting on
    the middle of the room so the freed space becomes wall above and near
    floor below. */
-const SQUASH = 0.8;
+const SQUASH = 0.64;
 const HORIZON = 64 + (540 - 128) / 2;      // the arena's own middle
 function projY(wy) { return HORIZON + (wy - HORIZON) * SQUASH; }
 const ACCENT = '#ff9e2c';             // ember — reserved for boss telegraphs & fire
@@ -1686,9 +1686,9 @@ function BPH() { return BD().phases[B.phase2 ? 1 : 0]; }
 function liftOf(h) { return h / SQUASH; }
 function bossHeadY() {
   const shr = B.phase2 ? 0.58 : 1;
-  return B.y - liftOf(BPH().height * 0.55 * shr + B.r * shr + 6);
+  return B.y - liftOf(BPH().height * 0.9 * shr + B.r * shr + 6);
 }
-function playerHeadY() { return P.y - liftOf(13 + 16); }
+function playerHeadY() { return P.y - liftOf(22 + 16); }
 
 function playerAttackActive() {
   const a = P.act;
@@ -3049,8 +3049,8 @@ function drawFloor() {
 function drawFogWall() {
   const t = G.time;
   ctx.save();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = 'rgba(130,148,190,0.4)';
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(130,148,190,0.13)';
   roundRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h, 10);
   ctx.stroke();
   ctx.globalAlpha = 1;
@@ -3063,8 +3063,11 @@ function drawFogWall() {
     else if (p < 2 * ARENA.w + ARENA.h) { x = ARENA.x + ARENA.w - (p - ARENA.w - ARENA.h); y = ARENA.y + ARENA.h; }
     else { x = ARENA.x; y = ARENA.y + ARENA.h - (p - 2 * ARENA.w - ARENA.h); }
     const s = Math.abs(10 + 9 * Math.sin(t * 0.8 + i * 2.1)) + 8;
-    ctx.globalAlpha = 0.09 + 0.06 * Math.sin(t * 1.3 + i);
-    ctx.drawImage(FOG_SPRITE, x - s, y - s, s * 2, s * 2);
+    ctx.globalAlpha = 0.11 + 0.07 * Math.sin(t * 1.3 + i);
+    ctx.save();
+    ctx.translate(x, y); ctx.scale(1, 1 / SQUASH);      // mist stands in the air
+    ctx.drawImage(FOG_SPRITE, -s, -s * 1.35, s * 2, s * 2.7);
+    ctx.restore();
   }
   ctx.globalAlpha = 1;
   ctx.fillStyle = 'rgba(4,5,8,0.72)';
@@ -3230,6 +3233,31 @@ function drawParticles() {
 }
 
 function drawSword(len, white) { drawSwordProfile(ctx, len, { white }); }
+
+/* The part of a person an overhead view cannot show: the legs and the trunk
+   holding the shoulders up off the floor. Drawn in screen-vertical space so
+   it never turns with the facing — you are always looking at it side-on. */
+function drawStandColumn(h, wBase, wTop, colLo, colHi, white) {
+  if (h < 4) return;
+  const g = ctx.createLinearGradient(0, 3, 0, -h);
+  g.addColorStop(0, white ? '#ffffff' : colLo);
+  g.addColorStop(1, white ? '#ffffff' : colHi);
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(-wBase, 3);
+  ctx.quadraticCurveTo(-wTop * 1.05, -h * 0.55, -wTop, -h);
+  ctx.lineTo(wTop, -h);
+  ctx.quadraticCurveTo(wTop * 1.05, -h * 0.55, wBase, 3);
+  ctx.closePath();
+  ctx.fill();
+  if (!white) {                       // the light in this room comes from below and behind
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,158,44,0.05)';
+    ctx.fillRect(-wBase * 0.8, 0, wBase * 1.6, 2);
+  }
+}
 
 /* ---------- the two who come to the threshold ----------
    They are not palette swaps. One is built out of the sword Aldric handed
@@ -3697,9 +3725,16 @@ function drawPlayer() {
   ctx.beginPath(); ctx.ellipse(0, 8, 21 * pzs, 8 * pzs, 0, 0, Math.PI * 2); ctx.fill();
   // and he stands up out of it
   ctx.scale(1, 1 / SQUASH);
-  ctx.translate(0, -(P.act && P.act.type === 'roll' ? 4 : 13) - (P.z || 0));
-
   const rolling = P.act && P.act.type === 'roll';
+  const pLift = (rolling ? 5 : 22) + (P.z || 0);
+  if (!rolling) {
+    const pc = CH().id === 'pair'
+      ? ['#0d0b0a', '#4a3630']            // dark trousers under a torn cloak
+      : ['#10131d', '#3f4860'];           // greaves, then the skirt of his mail
+    drawStandColumn(pLift, 6, 11, pc[0], pc[1], P.flash > 0);
+  }
+  ctx.translate(0, -pLift);
+
   const flasking = P.act && P.act.type === 'flask';
   const white = P.flash > 0;
   ctx.rotate(rolling ? Math.atan2(P.act.dirY, P.act.dirX) : P.face);
@@ -3943,7 +3978,9 @@ function drawBoss() {
   ctx.beginPath(); ctx.ellipse(0, 12 * shr, 56 * shr * zsh, 20 * shr * zsh, 0, 0, Math.PI * 2); ctx.fill();
   // he rises out of it further than you do — that is most of what he is
   ctx.scale(1, 1 / SQUASH);
-  ctx.translate(0, -(BPH().height * 0.55) * shr - (B.z || 0));
+  const bLift = (BPH().height * 0.9) * shr + (B.z || 0);
+  drawStandColumn(bLift, 15 * shr, 26 * shr, '#0a080f', '#3b3049', B.flash > 0);
+  ctx.translate(0, -bLift);
 
   ctx.rotate(B.face);
   ctx.scale(shr, shr);
