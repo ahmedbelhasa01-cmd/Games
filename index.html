@@ -1149,8 +1149,8 @@ const P = {  // Nomad
   dead: false, deathX: 0, deathY: 0, deathFace: 0, fellDone: false, swordDropDone: false
 };
 
-const BOSS_NAME = 'ALDRIC';
-const B = {  // boss
+const B = {  // whoever is standing at the far end of the room
+  defId: 'aldric',
   x: 0, y: 0, r: 34,
   hp: 1200, hpMax: 1200, hpGhost: 1200,
   face: Math.PI,
@@ -1269,10 +1269,13 @@ function resetFight() {
   P.locked = false; P.act = null; P.hurtInv = 0; P.kbX = P.kbY = 0; P.flash = 0;
   P.dead = false; P.fellDone = false; P.swordDropDone = false; P.dagger1Done = false; P.deathFace = 0;
 
-  B.x = ARENA.x + ARENA.w - 170; B.y = ARENA.y + ARENA.h / 2;
-  B.hp = B.hpMax; B.hpGhost = B.hpMax; B.face = Math.PI;
+  const bd = BD();
+  B.hpMax = bd.hpMax;
+  B.r = bd.phases[0].r;
+  B.x = bd.entry.x; B.y = ARENA.y + ARENA.h / 2;
+  B.hp = B.hpMax; B.hpGhost = B.hpMax; B.face = bd.entry.face;
   B.phase2 = false; B.state = 'idle'; B.stateT = 0; B.cd = 1.1;
-  B.atk = null; B.atkSet = 1; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
+  B.atk = null; B.atkSet = 1; B.setRef = null; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
   B.poise = 0; B.staggerT = 0; B.bleed = 0; B.defBreak = 0; B.wOff = 0.5; B.wLen = 86; B.tele = 0; B.flash = 0; B.dieT = 0;
   B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0; B.readCd = 0;
   B.hesitated = false; B.mourned = false; B.coreDim = 0; B.guarding = false;
@@ -1282,7 +1285,7 @@ function resetFight() {
   HABITS.load();                          // the ledger for whoever stands at the gate
 
   G.particles.length = 0; G.slashes.length = 0; G.dmgNums.length = 0; G.rings.length = 0;
-  G.fissures.length = 0; G.debris = null; G.shedPlates = []; B.r = 34;
+  G.fissures.length = 0; G.debris = null; G.shedPlates = [];
   G.barLifted = false; G.cinematic = false; G.lastAggro = -10;
   G.carve = null; G.victoryChimed = false;
   G.hitstop = 0; G.shake = 0; G.slowmo = 0; G.paused = false;
@@ -1514,7 +1517,7 @@ function damageBoss(dmg, noBleed) {
   rumble(70, 0.15, 0.5);
   if (!noBleed && !lethal) addBleed();   // a coated cut banks its share of the debt
 
-  if (B.poise >= 6 && B.state !== 'stagger' && B.state !== 'break' && B.state !== 'daze' && B.state !== 'hesitate') {
+  if (B.poise >= BD().poiseMax && B.state !== 'stagger' && B.state !== 'break' && B.state !== 'daze' && B.state !== 'hesitate') {
     B.state = 'stagger'; B.stateT = 0; B.staggerT = 1.5; B.poise = 0;
     B.atk = null; B.tele = 0;
     sfx.stagger();
@@ -1523,8 +1526,9 @@ function damageBoss(dmg, noBleed) {
   }
 
   // THE BREAK — at half health he makes a decision
-  if (!B.phase2 && B.state !== 'break' && B.hp <= B.hpMax * 0.5 && B.hp > 0) {
-    B.state = 'break'; B.stateT = 0; B.breakStep = 0;
+  const tr = BD().transition;
+  if (tr && !B.phase2 && B.state !== tr.state && B.hp <= B.hpMax * tr.at && B.hp > 0) {
+    B.state = tr.state; B.stateT = 0; B.breakStep = 0;
     B.atk = null; B.tele = 0;
     G.cinematic = true;
     G.fissures.length = 0;
@@ -1543,7 +1547,7 @@ function damageBoss(dmg, noBleed) {
     AudioSys.duck(0.045, 0.18);
     spawnParticles(B.x, B.y, 34, '#ffe9a8', 260, 0.9);
     HABITS.clear();                        // a new run starts clean — both pages of the ledger
-    startCarve();
+    BD().onDeath();
   }
 }
 
@@ -1573,6 +1577,37 @@ function onParrySuccess() {
 const CLASH_SET1 = { slam: 1, buried: 1, spin: 1, charge: 1, sweep: 1 };
 const CLASH_SET2 = { rising: 1, step: 1 };   // the quick shard work just trades
 
+/* =========================================================================
+   THE BESTIARY
+   A boss is a pile of data plus a handful of beats that are only his.
+   Everything the engine needs to run one lives in this table: his name and
+   health, the shape he presents in each phase, which attacks he owns, how
+   he chooses between them, how he stands when he is not swinging, and the
+   scripted moments that are his alone. Adding another means writing a new
+   entry here — the driver in updateBoss() never learns his name.
+   ========================================================================= */
+const BOSSES = {
+  aldric: {
+    id: 'aldric', name: 'ALDRIC',
+    hpMax: 1200,
+    poiseMax: 6,                    // clean hits before his stance gives
+    entry: { x: ARENA.x + ARENA.w - 170, face: Math.PI },
+    phases: [
+      { id: 'maul',  set: ATK1, r: 34, height: 46, wLen: 86,
+        clash: CLASH_SET1, choose: chooseAttack1, idle: aldricIdleMaul },
+      { id: 'shard', set: ATK2, r: 19, height: 30, wLen: 58,
+        clash: CLASH_SET2, choose: chooseAttack2, idle: aldricIdleShard }
+    ],
+    /* states the engine hands straight back to him */
+    states: { carve: aldricCarve, break: aldricBreak, hesitate: aldricHesitate, read: aldricRead },
+    /* the half-health decision, and what is left when he loses */
+    transition: { at: 0.5, state: 'break' },
+    onDeath: startCarve
+  }
+};
+function BD() { return BOSSES[B.defId] || BOSSES.aldric; }
+function BPH() { return BD().phases[B.phase2 ? 1 : 0]; }
+
 function playerAttackActive() {
   const a = P.act;
   if (!a || (a.type !== 'light' && a.type !== 'heavy') || a.charging) return null;
@@ -1589,7 +1624,7 @@ function playerAttackActive() {
 function tryClash() {
   if (G.screen !== 'fight') return null;
   if (playerInvulnerable() || P.blocking) return null;   // the roll and the guard resolve first, always
-  if (!(B.atkSet === 2 ? CLASH_SET2[B.atk] : CLASH_SET1[B.atk])) return null;
+  if (!BPH().clash[B.atk]) return null;
   const a = playerAttackActive();
   if (!a) return null;
   if (CH().id === 'blade' && a.type !== 'heavy') return null;   // the light cut trades; only the heavy argues
@@ -1929,7 +1964,7 @@ function updatePlayer(dt) {
             a.chargeT = Math.min(C.chargeMax, a.chargeT + dt);
             if (!a.chargeObs && a.chargeT > 0.3 && HABITS.data) {
               a.chargeObs = true;
-              const bAtk = B.state === 'attack' && B.atk && (B.atkSet === 2 ? ATK2 : ATK1)[B.atk];
+              const bAtk = B.state === 'attack' && B.atk && (B.setRef || currentSet())[B.atk];
               const inRec = (bAtk && bAtk.phases[B.phaseIdx] && bAtk.phases[B.phaseIdx].k === 'r')
                 || (B.state === 'idle' && B.cd > 0.35);
               if (inRec) HABITS.data.chargeRec++;
@@ -2127,12 +2162,13 @@ function updatePlayer(dt) {
 /* =========================================================================
    BOSS UPDATE
    ========================================================================= */
-function currentSet() { return B.phase2 ? ATK2 : ATK1; }
+function currentSet() { return BPH().set; }
 function bossStartAttack(name) {
   // he has seen you dive at the stuck maul five times; sometimes now the struggle is theatre
   B.buriedFake = name === 'buried' && HABITS.has('punish') && Math.random() < 0.45;
   const set = currentSet();
   B.atk = name; B.atkSet = B.phase2 ? 2 : 1;
+  B.setRef = set;                       // the swing belongs to the set it was drawn from
   B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
   B.phaseStarted = false; B.impacted = false;
   B.state = 'attack'; B.stateT = 0;
@@ -2179,6 +2215,237 @@ function chooseAttack2(d) {
 
 /* how close he wants to stand: right on top of the knives, at arm's length of the sword */
 function preferredGap() { return CH().id === 'pair' ? 0.82 : 1.18; }
+
+
+/* =========================================================================
+   ALDRIC — the beats that are his alone. The driver in updateBoss() knows
+   nothing about any of this; it only knows to ask the definition whether
+   the current state belongs to the boss rather than to the engine.
+   ========================================================================= */
+
+/* ---- THE CARVING — the ending ---- */
+function aldricCarve(dt, angToP) {
+  const cv = G.carve;
+  if (!cv) return;
+  cv.t += dt;
+  if (cv.phase === 'fall') {
+    // he goes down where he stood: knees, then forward onto the stone
+    B.wOff = lerp(B.wOff, 1.5, 3 * dt); B.wLen = lerp(B.wLen, 44, 3 * dt);
+    if (!cv.thudDone && cv.t >= 0.95) {
+      cv.thudDone = true;
+      sfx.bodyFall();
+      G.shake = Math.max(G.shake, 9);
+      rumble(300, 0.8, 0.4);
+      spawnParticles(B.x, B.y + 8, 26, 'rgba(150,146,138,0.6)', 150, 0.9);
+    }
+    if (cv.t > 1.9) { cv.phase = 'carving'; cv.t = 0; }
+  } else if (cv.phase === 'carving') {
+    cv.progress = Math.min(0.93, cv.t / 3.6);      // the final glyph is never finished
+    cv.scrapeT -= dt;
+    if (cv.scrapeT <= 0 && cv.progress < 0.93) { cv.scrapeT = rand(0.3, 0.45); sfx.scrapeOne(); }
+    if (cv.progress < 0.93 && Math.random() < dt * 18) {
+      const si = Math.floor(cv.progress * cv.strokes.length);
+      const st2 = cv.strokes[Math.min(si, cv.strokes.length - 1)];
+      const gx = cv.x - 64 + st2.g * 16;
+      spawnDrift(gx + st2.s[2], cv.y + 26 + st2.s[3], rand(-20, 20), rand(-30, -6), ACCENT, rand(0.15, 0.4), 1.5);
+      spawnDrift(gx + st2.s[2], cv.y + 26 + st2.s[3], rand(-12, 12), rand(-16, -2), 'rgba(170,164,152,0.6)', rand(0.3, 0.6), 1.5);
+    }
+    if (cv.t > 4.4) { cv.phase = 'drop'; cv.t = 0; }
+  } else if (cv.phase === 'drop') {
+    B.wOff = lerp(B.wOff, 1.7, 3 * dt); B.wLen = lerp(B.wLen, 40, 3 * dt);   // the shard drags off
+    if (cv.t > 0.8) { cv.phase = 'still'; cv.t = 0; }
+  } else if (cv.phase === 'still') {
+    if (cv.t > 1.4) { cv.phase = 'dissolve'; cv.t = 0; AudioSys.duck(0.45, 2.0); }
+  } else if (cv.phase === 'dissolve') {
+    // and then there is no one there
+    if (Math.random() < dt * 46) {
+      spawnDrift(B.x + rand(-30, 30), B.y + rand(-24, 24), rand(-14, 14), rand(-52, -20),
+        Math.random() < 0.5 ? ACCENT : 'rgba(196,190,176,0.55)', rand(0.6, 1.4), rand(1.4, 2.8));
+    }
+    if (cv.t > 2.2 && G.screen === 'fight') goto('victory');
+  }
+  return;
+}
+
+/* ---- THE BREAK — a decision, not an injury ---- */
+function aldricBreak(dt, angToP) {
+  const t = B.stateT;
+  if (t < 0.9) {                       // staggers back, plants the hammer head-down, goes still
+    if (t < 0.4) { B.x -= Math.cos(angToP) * 55 * dt; B.y -= Math.sin(angToP) * 55 * dt; }
+    B.wOff = lerp(B.wOff, 1.45, 5 * dt); B.wLen = lerp(B.wLen, 86, 5 * dt);
+    B.breakStep = 0;
+  } else if (t < 1.55) {               // down on one knee, haft across the thigh
+    B.breakStep = 1;
+    B.wOff = lerp(B.wOff, 0.1, 7 * dt); B.wLen = lerp(B.wLen, 70, 7 * dt);
+  } else {
+    if (B.breakStep < 2) {             // the CRACK
+      B.breakStep = 2;
+      B.broken = true;
+      AudioSys.duck(0.45, 0.05);
+      sfx.crack();
+      G.shake = Math.max(G.shake, 16);
+      rumble(900, 1.0, 1.0);
+      const da = angToP + rand(1.8, 2.6) * (Math.random() < 0.5 ? 1 : -1);
+      G.debris = {
+        x: B.x + Math.cos(B.face) * 20, y: B.y + Math.sin(B.face) * 20,
+        vx: Math.cos(da) * 260, vy: Math.sin(da) * 260,
+        rot: rand(0, Math.PI * 2), vr: rand(-9, 9), settleT: 0.7
+      };
+      spawnParticles(B.x, B.y, 26, '#8a7a62', 240, 0.7);
+      spawnParticles(B.x, B.y, 16, ACCENT, 200, 0.8);
+    }
+    if (t < 2.35) {                    // core flares to maximum; cracks spread
+      B.wOff = lerp(B.wOff, 0.3, 6 * dt); B.wLen = lerp(B.wLen, 34, 6 * dt);
+    } else if (t < 3.05) {             // he rises differently: low, blade forward and level
+      if (B.breakStep < 3) {
+        B.breakStep = 3;
+        // the pauldrons come off — unbuckled, not torn. Nothing that heavy is
+        // coming with him into the second half of this.
+        for (const sy of [-1, 1]) {
+          G.shedPlates.push({
+            x: B.x + Math.cos(B.face + sy * 1.9) * 34 + rand(-6, 6),
+            y: B.y + Math.sin(B.face + sy * 1.9) * 34 + rand(2, 12),
+            rot: rand(0, Math.PI * 2)
+          });
+        }
+        sfx.swordDrop();               // steel meeting stone
+        G.shake = Math.max(G.shake, 6);
+        spawnParticles(B.x, B.y, 18, '#98a3ba', 190, 0.6);
+        spawnParticles(B.x, B.y, 10, 'rgba(150,146,138,0.6)', 130, 0.8);
+      }
+      B.wOff = lerp(B.wOff, 0.12, 6 * dt); B.wLen = lerp(B.wLen, 58, 6 * dt);
+    } else {
+      B.phase2 = true;
+      B.r = BD().phases[1].r;          // out of the armor he is barely bigger than you are
+      G.barLifted = true;              // the bar rests against the frame from here on
+      G.cinematic = false;
+      B.state = 'idle'; B.cd = 0.7; B.chainCount = 0;
+    }
+  }
+  B.tele = 0;
+  return;
+}
+
+/* ---- THE HESITATION — exactly once; nothing speeds up afterward ---- */
+function aldricHesitate(dt, angToP) {
+  const t = B.stateT;
+  if (t < 0.5) {
+    const k = t / 0.5;
+    B.wOff = lerp(0.35, 0.05, k); B.wLen = lerp(58, 34, k);
+    B.tele = k * 0.85;
+    B.face = turnToward(B.face, angToP, 1.6 * dt);
+  } else if (t < 1.15) {               // held at the top — and nothing comes
+    B.tele = 0;
+    B.coreDim = Math.min(1, B.coreDim + 4 * dt);
+    if (!B.mourned) { B.mourned = true; sfx.mourn(); }
+  } else if (t < 2.45) {               // the blade comes down, unswung
+    const k = (t - 1.15) / 1.3;
+    B.wOff = lerp(0.05, 1.35, k); B.wLen = lerp(34, 58, k);
+    B.coreDim = 1;
+  } else {
+    B.hesitated = true;
+    B.state = 'idle'; B.cd = 0.7;
+  }
+  return;
+}
+
+/* ---- THE READ — he sees the charge coming ---- */
+function aldricRead(dt, angToP) {
+  B.tele = 0.55 + 0.45 * Math.sin(G.time * 34);   // a sharp, unmistakable flicker
+  B.face = turnToward(B.face, angToP, 6 * dt);
+  B.wOff = lerp(B.wOff, -0.4, 11 * dt); B.wLen = lerp(B.wLen, 62, 11 * dt);
+  // he closes the last of the gap as he commits, so the charge is never safe
+  if (dist(B.x, B.y, P.x, P.y) > 120) {
+    B.x += Math.cos(angToP) * 190 * dt; B.y += Math.sin(angToP) * 190 * dt;
+  }
+  if (B.stateT >= 0.22) { B.chainCount = 1; bossStartAttack('punish'); }
+  return;
+}
+
+/* ---- PHASE ONE: the reactive stance. He will not start this fight. ---- */
+function aldricIdleMaul(dt, angToP, d) {
+  /* REACTIVE STANCE — phase 1 only. No aggression, no fight. */
+  const passive = G.time - G.lastAggro > 1.4;
+  B.guarding = passive;
+  B.wOff = lerp(B.wOff, passive ? 1.05 : 0.5, 4 * dt);
+  B.wLen = lerp(B.wLen, 86, 4 * dt);
+  B.face = turnToward(B.face, angToP, 3.0 * dt);
+  /* he knows when you drink: as your health nears the number he has
+     memorized, he stops waiting — the same feet, pointed at you sooner */
+  const thirsty = HABITS.has('flask') && P.hp / P.hpMax < HABITS.flaskAt() + 0.05;
+  if (HABITS.has('flask') && P.act && P.act.type === 'flask' && d < 260) B.cd = Math.min(B.cd, 0.05);
+  if (HABITS.has('charge') && P.act && P.act.charging && P.act.chargeT > 0.2) B.cd = Math.min(B.cd, 0.3);
+  if (B.hopT > 0) {                    // the disengaging step
+    B.hopT -= dt;
+    B.x -= Math.cos(angToP) * 240 * dt; B.y -= Math.sin(angToP) * 240 * dt;
+    if (Math.random() < dt * 20) spawnDrift(B.x - Math.cos(angToP) * 20, B.y + 8, rand(-8, 8), rand(-14, -4), 'rgba(150,146,138,0.4)', 0.4, 2);
+  }
+  const gap = preferredGap() * (thirsty ? 0.55 : 1);
+  if (d > (passive ? 250 : 165) * gap) {
+    const sp = d > 300 ? 162 : 112;
+    const weave = Math.sin(G.time * 1.4 + B.weaveSeed) * 0.5;   // he closes at an angle, not on rails
+    B.x += Math.cos(angToP + weave) * sp * dt; B.y += Math.sin(angToP + weave) * sp * dt;
+  } else {
+    B.strafeT -= dt;
+    if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.8, 1.8); }
+    const sa = angToP + Math.PI / 2 * B.strafeDir;
+    B.x += Math.cos(sa) * (passive ? 68 : 52) * dt; B.y += Math.sin(sa) * (passive ? 68 : 52) * dt;
+  }
+  // a lesson waits for a quiet beat — never inside the break's shadow
+  if (HABITS.pending && B.hp > B.hpMax * 0.56 && !G.cinematic) {
+    B.state = 'learn'; B.stateT = 0;
+    sfx.learn();
+    return;
+  }
+  B.cd -= dt * (passive ? 0.15 : 1);
+  if (B.cd <= 0) {
+    if (passive && Math.random() < 0.6) B.cd = rand(0.9, 1.6);   // he shifts his guard and keeps waiting
+    else { B.chainCount = 1; bossStartAttack(BPH().choose(d)); }
+  }
+}
+
+/* ---- PHASE TWO: low, forward, and no longer waiting ---- */
+function aldricIdleShard(dt, angToP, d) {
+  B.guarding = false;
+  B.wOff = lerp(B.wOff, 0.35, 5 * dt);   // low stance, blade forward and level
+  B.wLen = lerp(B.wLen, 58, 5 * dt);
+  B.face = turnToward(B.face, angToP, 4.2 * dt);
+  const thirsty2 = HABITS.has('flask') && P.hp / P.hpMax < HABITS.flaskAt() + 0.05;
+  if (HABITS.has('flask') && P.act && P.act.type === 'flask' && d < 260) B.cd = Math.min(B.cd, 0.05);
+  if (B.hopT > 0) {
+    B.hopT -= dt;
+    B.x -= Math.cos(angToP) * 300 * dt; B.y -= Math.sin(angToP) * 300 * dt;
+    if (Math.random() < dt * 24) spawnDrift(B.x - Math.cos(angToP) * 16, B.y + 6, rand(-8, 8), rand(-14, -4), 'rgba(150,146,138,0.4)', 0.35, 2);
+  }
+  if (d > 140 * preferredGap() * (thirsty2 ? 0.55 : 1)) {
+    const weave = Math.sin(G.time * 2.1 + B.weaveSeed) * 0.55;
+    B.x += Math.cos(angToP + weave) * 175 * dt; B.y += Math.sin(angToP + weave) * 175 * dt;
+  } else {
+    B.strafeT -= dt;
+    if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.6, 1.4); }
+    const sa = angToP + Math.PI / 2 * B.strafeDir;
+    B.x += Math.cos(sa) * 80 * dt; B.y += Math.sin(sa) * 80 * dt;
+  }
+  // he reads a heavy being wound up and refuses to stand there for it
+  const charging = P.act && P.act.type === 'heavy' && P.act.charging && P.act.chargeT > 0.35;
+  if (charging && B.readCd <= 0 && !P.dead) {
+    B.state = 'read'; B.stateT = 0; B.readCd = 5.0;
+    B.atk = null;
+    sfx.read();
+    return;
+  }
+  // a lesson waits its turn — never while the hesitation is owed or near
+  if (HABITS.pending && (B.hesitated || P.hp > P.hpMax * 0.45) && !G.cinematic) {
+    B.state = 'learn'; B.stateT = 0;
+    sfx.learn();
+    return;
+  }
+  B.cd -= dt;
+  if (B.cd <= 0) {
+    if (!B.hesitated && P.hp <= 35) { B.state = 'hesitate'; B.stateT = 0; B.mourned = false; }
+    else { B.chainCount = 1; bossStartAttack(BPH().choose(d)); }
+  }
+}
 
 function updateBoss(dt) {
   B.flash = Math.max(0, B.flash - dt);
@@ -2236,49 +2503,11 @@ function updateBoss(dt) {
     spawnDrift(B.x + Math.cos(sa) * 26, B.y + Math.sin(sa) * 26, rand(-6, 6), rand(12, 32), 'rgba(150,146,138,0.5)', rand(0.5, 1.1), rand(1.4, 2.4));
   }
 
-  /* ---- THE CARVING — the ending ---- */
-  if (B.state === 'carve') {
-    const cv = G.carve;
-    if (!cv) return;
-    cv.t += dt;
-    if (cv.phase === 'fall') {
-      // he goes down where he stood: knees, then forward onto the stone
-      B.wOff = lerp(B.wOff, 1.5, 3 * dt); B.wLen = lerp(B.wLen, 44, 3 * dt);
-      if (!cv.thudDone && cv.t >= 0.95) {
-        cv.thudDone = true;
-        sfx.bodyFall();
-        G.shake = Math.max(G.shake, 9);
-        rumble(300, 0.8, 0.4);
-        spawnParticles(B.x, B.y + 8, 26, 'rgba(150,146,138,0.6)', 150, 0.9);
-      }
-      if (cv.t > 1.9) { cv.phase = 'carving'; cv.t = 0; }
-    } else if (cv.phase === 'carving') {
-      cv.progress = Math.min(0.93, cv.t / 3.6);      // the final glyph is never finished
-      cv.scrapeT -= dt;
-      if (cv.scrapeT <= 0 && cv.progress < 0.93) { cv.scrapeT = rand(0.3, 0.45); sfx.scrapeOne(); }
-      if (cv.progress < 0.93 && Math.random() < dt * 18) {
-        const si = Math.floor(cv.progress * cv.strokes.length);
-        const st2 = cv.strokes[Math.min(si, cv.strokes.length - 1)];
-        const gx = cv.x - 64 + st2.g * 16;
-        spawnDrift(gx + st2.s[2], cv.y + 26 + st2.s[3], rand(-20, 20), rand(-30, -6), ACCENT, rand(0.15, 0.4), 1.5);
-        spawnDrift(gx + st2.s[2], cv.y + 26 + st2.s[3], rand(-12, 12), rand(-16, -2), 'rgba(170,164,152,0.6)', rand(0.3, 0.6), 1.5);
-      }
-      if (cv.t > 4.4) { cv.phase = 'drop'; cv.t = 0; }
-    } else if (cv.phase === 'drop') {
-      B.wOff = lerp(B.wOff, 1.7, 3 * dt); B.wLen = lerp(B.wLen, 40, 3 * dt);   // the shard drags off
-      if (cv.t > 0.8) { cv.phase = 'still'; cv.t = 0; }
-    } else if (cv.phase === 'still') {
-      if (cv.t > 1.4) { cv.phase = 'dissolve'; cv.t = 0; AudioSys.duck(0.45, 2.0); }
-    } else if (cv.phase === 'dissolve') {
-      // and then there is no one there
-      if (Math.random() < dt * 46) {
-        spawnDrift(B.x + rand(-30, 30), B.y + rand(-24, 24), rand(-14, 14), rand(-52, -20),
-          Math.random() < 0.5 ? ACCENT : 'rgba(196,190,176,0.55)', rand(0.6, 1.4), rand(1.4, 2.8));
-      }
-      if (cv.t > 2.2 && G.screen === 'fight') goto('victory');
-    }
-    return;
-  }
+  const angToP = Math.atan2(P.y - B.y, P.x - B.x);
+
+  /* ---- the beats that belong to this boss alone ---- */
+  const ownBeat = BD().states[B.state];
+  if (ownBeat) { ownBeat(dt, angToP); return; }
 
   if (B.state === 'dying') {
     B.dieT += dt;
@@ -2287,66 +2516,6 @@ function updateBoss(dt) {
     return;
   }
 
-  const angToP = Math.atan2(P.y - B.y, P.x - B.x);
-
-  /* ---- THE BREAK — a decision, not an injury ---- */
-  if (B.state === 'break') {
-    const t = B.stateT;
-    if (t < 0.9) {                       // staggers back, plants the hammer head-down, goes still
-      if (t < 0.4) { B.x -= Math.cos(angToP) * 55 * dt; B.y -= Math.sin(angToP) * 55 * dt; }
-      B.wOff = lerp(B.wOff, 1.45, 5 * dt); B.wLen = lerp(B.wLen, 86, 5 * dt);
-      B.breakStep = 0;
-    } else if (t < 1.55) {               // down on one knee, haft across the thigh
-      B.breakStep = 1;
-      B.wOff = lerp(B.wOff, 0.1, 7 * dt); B.wLen = lerp(B.wLen, 70, 7 * dt);
-    } else {
-      if (B.breakStep < 2) {             // the CRACK
-        B.breakStep = 2;
-        B.broken = true;
-        AudioSys.duck(0.45, 0.05);
-        sfx.crack();
-        G.shake = Math.max(G.shake, 16);
-        rumble(900, 1.0, 1.0);
-        const da = angToP + rand(1.8, 2.6) * (Math.random() < 0.5 ? 1 : -1);
-        G.debris = {
-          x: B.x + Math.cos(B.face) * 20, y: B.y + Math.sin(B.face) * 20,
-          vx: Math.cos(da) * 260, vy: Math.sin(da) * 260,
-          rot: rand(0, Math.PI * 2), vr: rand(-9, 9), settleT: 0.7
-        };
-        spawnParticles(B.x, B.y, 26, '#8a7a62', 240, 0.7);
-        spawnParticles(B.x, B.y, 16, ACCENT, 200, 0.8);
-      }
-      if (t < 2.35) {                    // core flares to maximum; cracks spread
-        B.wOff = lerp(B.wOff, 0.3, 6 * dt); B.wLen = lerp(B.wLen, 34, 6 * dt);
-      } else if (t < 3.05) {             // he rises differently: low, blade forward and level
-        if (B.breakStep < 3) {
-          B.breakStep = 3;
-          // the pauldrons come off — unbuckled, not torn. Nothing that heavy is
-          // coming with him into the second half of this.
-          for (const sy of [-1, 1]) {
-            G.shedPlates.push({
-              x: B.x + Math.cos(B.face + sy * 1.9) * 34 + rand(-6, 6),
-              y: B.y + Math.sin(B.face + sy * 1.9) * 34 + rand(2, 12),
-              rot: rand(0, Math.PI * 2)
-            });
-          }
-          sfx.swordDrop();               // steel meeting stone
-          G.shake = Math.max(G.shake, 6);
-          spawnParticles(B.x, B.y, 18, '#98a3ba', 190, 0.6);
-          spawnParticles(B.x, B.y, 10, 'rgba(150,146,138,0.6)', 130, 0.8);
-        }
-        B.wOff = lerp(B.wOff, 0.12, 6 * dt); B.wLen = lerp(B.wLen, 58, 6 * dt);
-      } else {
-        B.phase2 = true;
-        B.r = 19;                        // out of the armor he is barely bigger than you are
-        G.barLifted = true;              // the bar rests against the frame from here on
-        G.cinematic = false;
-        B.state = 'idle'; B.cd = 0.7; B.chainCount = 0;
-      }
-    }
-    B.tele = 0;
-    return;
-  }
 
   if (B.state === 'learn') {             // he has seen enough of you
     B.tele = 0;
@@ -2381,47 +2550,12 @@ function updateBoss(dt) {
     return;
   }
 
-  /* ---- THE HESITATION — exactly once; nothing speeds up afterward ---- */
-  if (B.state === 'hesitate') {
-    const t = B.stateT;
-    if (t < 0.5) {
-      const k = t / 0.5;
-      B.wOff = lerp(0.35, 0.05, k); B.wLen = lerp(58, 34, k);
-      B.tele = k * 0.85;
-      B.face = turnToward(B.face, angToP, 1.6 * dt);
-    } else if (t < 1.15) {               // held at the top — and nothing comes
-      B.tele = 0;
-      B.coreDim = Math.min(1, B.coreDim + 4 * dt);
-      if (!B.mourned) { B.mourned = true; sfx.mourn(); }
-    } else if (t < 2.45) {               // the blade comes down, unswung
-      const k = (t - 1.15) / 1.3;
-      B.wOff = lerp(0.05, 1.35, k); B.wLen = lerp(34, 58, k);
-      B.coreDim = 1;
-    } else {
-      B.hesitated = true;
-      B.state = 'idle'; B.cd = 0.7;
-    }
-    return;
-  }
-
-  /* ---- THE READ — he sees the charge coming ---- */
-  if (B.state === 'read') {
-    B.tele = 0.55 + 0.45 * Math.sin(G.time * 34);   // a sharp, unmistakable flicker
-    B.face = turnToward(B.face, angToP, 6 * dt);
-    B.wOff = lerp(B.wOff, -0.4, 11 * dt); B.wLen = lerp(B.wLen, 62, 11 * dt);
-    // he closes the last of the gap as he commits, so the charge is never safe
-    if (dist(B.x, B.y, P.x, P.y) > 120) {
-      B.x += Math.cos(angToP) * 190 * dt; B.y += Math.sin(angToP) * 190 * dt;
-    }
-    if (B.stateT >= 0.22) { B.chainCount = 1; bossStartAttack('punish'); }
-    return;
-  }
 
   if (B.state === 'chainPause') {        // the beat between chained cuts — a real window
     B.tele = 0;
     B.wOff = lerp(B.wOff, 1.1, 6 * dt); B.wLen = lerp(B.wLen, 52, 6 * dt);
     B.face = turnToward(B.face, angToP, 1.0 * dt);
-    if (B.stateT >= B.pauseDur) { B.chainCount++; bossStartAttack(chooseAttack2(dist(B.x, B.y, P.x, P.y))); }
+    if (B.stateT >= B.pauseDur) { B.chainCount++; bossStartAttack(BPH().choose(dist(B.x, B.y, P.x, P.y))); }
     return;
   }
 
@@ -2436,87 +2570,7 @@ function updateBoss(dt) {
   if (B.state === 'idle') {
     B.tele = Math.max(0, B.tele - 4 * dt);
     const d = dist(B.x, B.y, P.x, P.y);
-
-    if (!B.phase2) {
-      /* REACTIVE STANCE — phase 1 only. No aggression, no fight. */
-      const passive = G.time - G.lastAggro > 1.4;
-      B.guarding = passive;
-      B.wOff = lerp(B.wOff, passive ? 1.05 : 0.5, 4 * dt);
-      B.wLen = lerp(B.wLen, 86, 4 * dt);
-      B.face = turnToward(B.face, angToP, 3.0 * dt);
-      /* he knows when you drink: as your health nears the number he has
-         memorized, he stops waiting — the same feet, pointed at you sooner */
-      const thirsty = HABITS.has('flask') && P.hp / P.hpMax < HABITS.flaskAt() + 0.05;
-      if (HABITS.has('flask') && P.act && P.act.type === 'flask' && d < 260) B.cd = Math.min(B.cd, 0.05);
-      if (HABITS.has('charge') && P.act && P.act.charging && P.act.chargeT > 0.2) B.cd = Math.min(B.cd, 0.3);
-      if (B.hopT > 0) {                    // the disengaging step
-        B.hopT -= dt;
-        B.x -= Math.cos(angToP) * 240 * dt; B.y -= Math.sin(angToP) * 240 * dt;
-        if (Math.random() < dt * 20) spawnDrift(B.x - Math.cos(angToP) * 20, B.y + 8, rand(-8, 8), rand(-14, -4), 'rgba(150,146,138,0.4)', 0.4, 2);
-      }
-      const gap = preferredGap() * (thirsty ? 0.55 : 1);
-      if (d > (passive ? 250 : 165) * gap) {
-        const sp = d > 300 ? 162 : 112;
-        const weave = Math.sin(G.time * 1.4 + B.weaveSeed) * 0.5;   // he closes at an angle, not on rails
-        B.x += Math.cos(angToP + weave) * sp * dt; B.y += Math.sin(angToP + weave) * sp * dt;
-      } else {
-        B.strafeT -= dt;
-        if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.8, 1.8); }
-        const sa = angToP + Math.PI / 2 * B.strafeDir;
-        B.x += Math.cos(sa) * (passive ? 68 : 52) * dt; B.y += Math.sin(sa) * (passive ? 68 : 52) * dt;
-      }
-      // a lesson waits for a quiet beat — never inside the break's shadow
-      if (HABITS.pending && B.hp > B.hpMax * 0.56 && !G.cinematic) {
-        B.state = 'learn'; B.stateT = 0;
-        sfx.learn();
-        return;
-      }
-      B.cd -= dt * (passive ? 0.15 : 1);
-      if (B.cd <= 0) {
-        if (passive && Math.random() < 0.6) B.cd = rand(0.9, 1.6);   // he shifts his guard and keeps waiting
-        else { B.chainCount = 1; bossStartAttack(chooseAttack1(d)); }
-      }
-    } else {
-      B.guarding = false;
-      B.wOff = lerp(B.wOff, 0.35, 5 * dt);   // low stance, blade forward and level
-      B.wLen = lerp(B.wLen, 58, 5 * dt);
-      B.face = turnToward(B.face, angToP, 4.2 * dt);
-      const thirsty2 = HABITS.has('flask') && P.hp / P.hpMax < HABITS.flaskAt() + 0.05;
-      if (HABITS.has('flask') && P.act && P.act.type === 'flask' && d < 260) B.cd = Math.min(B.cd, 0.05);
-      if (B.hopT > 0) {
-        B.hopT -= dt;
-        B.x -= Math.cos(angToP) * 300 * dt; B.y -= Math.sin(angToP) * 300 * dt;
-        if (Math.random() < dt * 24) spawnDrift(B.x - Math.cos(angToP) * 16, B.y + 6, rand(-8, 8), rand(-14, -4), 'rgba(150,146,138,0.4)', 0.35, 2);
-      }
-      if (d > 140 * preferredGap() * (thirsty2 ? 0.55 : 1)) {
-        const weave = Math.sin(G.time * 2.1 + B.weaveSeed) * 0.55;
-        B.x += Math.cos(angToP + weave) * 175 * dt; B.y += Math.sin(angToP + weave) * 175 * dt;
-      } else {
-        B.strafeT -= dt;
-        if (B.strafeT <= 0) { B.strafeDir = Math.random() < 0.5 ? -1 : 1; B.strafeT = rand(0.6, 1.4); }
-        const sa = angToP + Math.PI / 2 * B.strafeDir;
-        B.x += Math.cos(sa) * 80 * dt; B.y += Math.sin(sa) * 80 * dt;
-      }
-      // he reads a heavy being wound up and refuses to stand there for it
-      const charging = P.act && P.act.type === 'heavy' && P.act.charging && P.act.chargeT > 0.35;
-      if (charging && B.readCd <= 0 && !P.dead) {
-        B.state = 'read'; B.stateT = 0; B.readCd = 5.0;
-        B.atk = null;
-        sfx.read();
-        return;
-      }
-      // a lesson waits its turn — never while the hesitation is owed or near
-      if (HABITS.pending && (B.hesitated || P.hp > P.hpMax * 0.45) && !G.cinematic) {
-        B.state = 'learn'; B.stateT = 0;
-        sfx.learn();
-        return;
-      }
-      B.cd -= dt;
-      if (B.cd <= 0) {
-        if (!B.hesitated && P.hp <= 35) { B.state = 'hesitate'; B.stateT = 0; B.mourned = false; }
-        else { B.chainCount = 1; bossStartAttack(chooseAttack2(d)); }
-      }
-    }
+    BPH().idle(dt, angToP, d);
   } else if (B.state === 'recoil') {         // knocked off-balance by a parry
     B.tele = 0;
     B.wOff = lerp(B.wOff, -1.45, 7 * dt); B.wLen = lerp(B.wLen, 82, 7 * dt);
@@ -2527,7 +2581,7 @@ function updateBoss(dt) {
     }
     if (B.stateT >= 0.85) { B.state = 'idle'; B.cd = 0.75; }
   } else if (B.state === 'attack' && B.atk) {
-    const atk = (B.atkSet === 2 ? ATK2 : ATK1)[B.atk];
+    const atk = (B.setRef || currentSet())[B.atk];
     const ph = atk.phases[B.phaseIdx];
     const pdur = B.phaseDur;
     B.phaseT += dt;
@@ -4291,9 +4345,9 @@ function drawHUD() {
     ctx.textAlign = 'center';
     ctx.font = '600 18px Georgia, "Times New Roman", serif';
     ctx.fillStyle = 'rgba(0,0,0,0.75)';
-    drawTracked(BOSS_NAME, W / 2 + 1, by - 11, 4);
+    drawTracked(BD().name, W / 2 + 1, by - 11, 4);
     ctx.fillStyle = B.phase2 ? '#e6b45c' : '#d6cfc2';
-    drawTracked(BOSS_NAME, W / 2, by - 12, 4);
+    drawTracked(BD().name, W / 2, by - 12, 4);
 
     drawBar(bx, by, bw, 11, B.hp / B.hpMax, B.phase2 ? '#c02a24' : '#a8242c', '#6d161c', B.hpGhost / B.hpMax,
       { frame: B.phase2 ? 'rgba(230,180,92,0.7)' : 'rgba(148,138,116,0.55)' });
@@ -4306,7 +4360,7 @@ function drawHUD() {
       ctx.fillStyle = 'rgba(6,7,11,0.8)';
       ctx.fillRect(px, by + 15, pw, 3);
       ctx.fillStyle = 'rgba(255,233,168,0.85)';
-      ctx.fillRect(px, by + 15, pw * clamp(B.poise / 6, 0, 1), 3);
+      ctx.fillRect(px, by + 15, pw * clamp(B.poise / BD().poiseMax, 0, 1), 3);
     }
     // the bleed seam — a thin red accent under his health, the pair's only pressure
     if (CH().bleed) {
@@ -4522,7 +4576,7 @@ function drawIntro() {
   ctx.globalAlpha = clamp((G.screenT - 0.3) / 0.7, 0, 1);
   ctx.fillStyle = '#d6cfc2';
   ctx.font = '600 34px Georgia, "Times New Roman", serif';
-  drawTracked(BOSS_NAME, W / 2, H / 2 - 12, 10);
+  drawTracked(BD().name, W / 2, H / 2 - 12, 10);
   ctx.globalAlpha = 1;
   ctx.textAlign = 'left';
 }
@@ -4598,7 +4652,7 @@ function drawVictory() {
     ctx.globalAlpha = blink;
     ctx.fillStyle = '#cfc8ba';
     ctx.font = '18px Georgia, serif';
-    ctx.fillText(promptText('confirm') + '  to challenge ' + BOSS_NAME + ' again', W / 2, H / 2 + 84);
+    ctx.fillText(promptText('confirm') + '  to challenge ' + BD().name + ' again', W / 2, H / 2 + 84);
     ctx.globalAlpha = 1;
   }
   ctx.textAlign = 'left';
@@ -4762,7 +4816,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, camKick, onParrySuccess, bossStartAttack, ATK1, ATK2, CHARS, CH, SP_MAX, HABITS, startCarve };
+window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, camKick, onParrySuccess, bossStartAttack, ATK1, ATK2, BOSSES, BD, BPH, CHARS, CH, SP_MAX, HABITS, startCarve };
 </script>
 </body>
 </html>
