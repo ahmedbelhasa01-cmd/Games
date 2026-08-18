@@ -1035,6 +1035,7 @@ const G = {
   fissures: [],         // ember fissures racing out from a ground slam
   debris: null,         // the discarded maul head, once the haft is broken
   shedPlates: [],       // his pauldrons, where he left them
+  wallHit: 0,           // the far wall, still ringing from a charge that missed
   barLifted: false,     // the gate bar: barred in phase 1, lifted after the break
   cinematic: false,     // the break: player can't act, can't be hurt
   lastAggro: -10,       // when the player last read as aggressive
@@ -1376,7 +1377,9 @@ function updateCamera(dt) {
   let tx = W / 2, ty = H / 2, tz = 1.04;
   if (G.screen === 'fight' || G.screen === 'refade' || G.screen === 'dead' || G.screen === 'victory') {
     // drift toward the midpoint of the duel, clamped to the overscan slack
-    const mx = (P.x + B.x) / 2, my = (P.y + B.y) / 2;
+    /* the floor is tipped, so a body at world y shows up at projY(y) — the
+       camera has to chase the projection or it frames everyone's feet */
+    const mx = (P.x + B.x) / 2, my = projY((P.y + B.y) / 2);
     tx = W / 2 + clamp((mx - W / 2) * 0.28, -16, 16);
     ty = H / 2 + clamp((my - H / 2) * 0.28, -9, 9);
     // when the two close in, the camera leans in with them
@@ -1387,11 +1390,11 @@ function updateCamera(dt) {
     if (G.screen === 'dead') {         // stay on the body — this is the beat that was invisible
       const kk = clamp(G.screenT / 0.7, 0, 1);
       tz = 1.04 + 0.44 * kk;
-      tx = lerp(W / 2, P.deathX, kk); ty = lerp(H / 2, P.deathY, kk);
+      tx = lerp(W / 2, P.deathX, kk); ty = lerp(H / 2, projY(P.deathY) - 14, kk);
     }
-    else if (B.state === 'break') { tz = 1.20; tx = lerp(tx, B.x, 0.35); ty = lerp(ty, B.y, 0.35); }
-    else if (G.slowmo > 0) { tz = 1.34; tx = lerp(tx, B.x, 0.5); ty = lerp(ty, B.y, 0.5); }
-    else if (B.state === 'carve') { tz = 1.13; tx = lerp(tx, B.x, 0.3); ty = lerp(ty, B.y, 0.3); }
+    else if (B.state === 'break') { tz = 1.20; tx = lerp(tx, B.x, 0.35); ty = lerp(ty, projY(B.y), 0.35); }
+    else if (G.slowmo > 0) { tz = 1.34; tx = lerp(tx, B.x, 0.5); ty = lerp(ty, projY(B.y), 0.5); }
+    else if (B.state === 'carve') { tz = 1.13; tx = lerp(tx, B.x, 0.3); ty = lerp(ty, projY(B.y), 0.3); }
   }
   const sp = (G.slowmo > 0 || B.state === 'break') ? 3.4 : (G.screen === 'dead' ? 2.2 : 1.6);
   G.cam.x = lerp(G.cam.x, tx, Math.min(1, sp * dt));
@@ -1714,6 +1717,7 @@ function tryClash() {
   if (CH().id === 'pair') {                    // two knives cannot stop a maul
     P.act = { type: 'deflected', t: 0, dur: 0.6 };
     P.actQueue = null;
+    P.z = 18;                                    // slapped off his feet entirely
     P.kbX = -Math.cos(ang) * 380; P.kbY = -Math.sin(ang) * 380;
     G.hitstop = Math.max(G.hitstop, 0.05);
     G.shake = Math.max(G.shake, 7);
@@ -1745,6 +1749,7 @@ function tryClash() {
   // NEUTRAL CLASH — both blades ring, both bodies give ground
   P.act = { type: 'clashed', t: 0, dur: 0.35 };
   P.actQueue = null;
+  P.z = 15; B.z = Math.max(B.z || 0, 12);        // the bind lifts them both
   P.kbX = -Math.cos(ang) * 320; P.kbY = -Math.sin(ang) * 320;
   B.state = 'clashed'; B.stateT = 0; B.atk = null; B.tele = 0; B.pushA = ang;
   G.hitstop = Math.max(G.hitstop, 0.11);
@@ -2188,6 +2193,7 @@ function updatePlayer(dt) {
     } else if (a.type === 'clashed' || a.type === 'deflected') {
       // knocked off the bind — nothing cancels this, not even the dash
       speedMul = 0;
+      P.z = Math.max(0, (P.z || 0) - 90 * dt);   // and comes back down through the recovery
       if (a.t >= a.dur) P.act = null;
     } else if (a.type === 'flask') {
       speedMul = 0.42;
@@ -2697,7 +2703,7 @@ function updateBoss(dt) {
 
     // the blows that end on the stone rise off it first
     const airborne = ph.k === 'w' && atk.phases.some(p2 => p2.impact);
-    B.z = airborne ? 26 * Math.pow(k, 1.7) : Math.max(0, (B.z || 0) - 260 * dt);
+    B.z = airborne ? 26 * Math.pow(k, 1.7) : Math.max(0, (B.z || 0) - 620 * dt);
 
     // movement within a phase
     if (ph.move) {
@@ -2716,6 +2722,14 @@ function updateBoss(dt) {
       const hitWall = B.x <= ARENA.x + B.r || B.x >= ARENA.x + ARENA.w - B.r ||
                       B.y <= ARENA.y + B.r || B.y >= ARENA.y + ARENA.h - B.r;
       if (hitWall) {
+        // dust comes off the stone where he struck it
+        const upWall = B.y <= ARENA.y + B.r + 1;
+        for (let i = 0; i < 16; i++) {
+          spawnDrift(B.x + rand(-46, 46), (upWall ? ARENA.y - 6 : B.y) + rand(-8, 8),
+            rand(-26, 26), upWall ? rand(20, 70) : rand(-20, 20),
+            'rgba(150,146,138,0.55)', rand(0.5, 1.2), rand(1.4, 2.8));
+        }
+        if (upWall) G.wallHit = 0.5;
         B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
         B.y = clamp(B.y, ARENA.y + B.r, ARENA.y + ARENA.h - B.r);
         B.atk = null;
@@ -2774,6 +2788,7 @@ function updateBoss(dt) {
       // ground impact feedback once, at start of active
       if (ph.impact && !B.impacted) {
         B.impacted = true;
+        B.z = 0;                        // he arrives; all of him at once
         sfx.maulImpact();
         G.shake = Math.max(G.shake, ph.shake || 8);
         rumble(260, 0.7, 0.35);
@@ -2824,6 +2839,7 @@ function update(dt) {
   G.time += dt;
   G.screenT += dt;
   G.shake = Math.max(0, G.shake - G.shake * 7 * dt - 2 * dt);
+  G.wallHit = Math.max(0, (G.wallHit || 0) - dt * 1.6);
 
   // particles & slashes always tick
   for (let i = G.particles.length - 1; i >= 0; i--) {
@@ -4793,7 +4809,14 @@ function drawWorld() {
   ctx.scale(G.cam.zoom, G.cam.zoom);
   ctx.translate(-G.cam.x, -G.cam.y);
   // the ground lies down; whatever stands on it will push back up
-  ctx.drawImage(WALL_BAKE, 0, 0);          // the far wall, standing straight up
+  // the far wall, standing straight up — and still ringing if he ran into it
+  const wj = (G.wallHit || 0);
+  if (wj > 0) {
+    ctx.save();
+    ctx.translate(Math.sin(G.time * 70) * wj * 7, Math.sin(G.time * 53) * wj * 4);
+    ctx.drawImage(WALL_BAKE, 0, 0);
+    ctx.restore();
+  } else ctx.drawImage(WALL_BAKE, 0, 0);
 
   ctx.save();
   ctx.translate(0, HORIZON); ctx.scale(1, SQUASH); ctx.translate(0, -HORIZON);
@@ -4824,10 +4847,10 @@ function drawWorld() {
   }
 
   // the near edge of the room, falling away into the dark under your feet
-  const ne = ctx.createLinearGradient(0, projY(ARENA.y + ARENA.h) - 26, 0, H);
+  const ne = ctx.createLinearGradient(0, projY(ARENA.y + ARENA.h) + 12, 0, H);
   ne.addColorStop(0, 'rgba(0,0,0,0)'); ne.addColorStop(1, 'rgba(0,0,0,0.92)');
   ctx.fillStyle = ne;
-  ctx.fillRect(-40, projY(ARENA.y + ARENA.h) - 26, W + 80, H);
+  ctx.fillRect(-40, projY(ARENA.y + ARENA.h) + 12, W + 80, H);
 
   const v = ctx.createRadialGradient(W / 2, H / 2, 220, W / 2, H / 2, 560);
   v.addColorStop(0, 'rgba(0,0,0,0)');
@@ -4968,7 +4991,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, camKick, onParrySuccess, bossStartAttack, ATK1, ATK2, BOSSES, BD, BPH, CHARS, CH, SP_MAX, HABITS, startCarve };
+window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, camKick, onParrySuccess, bossStartAttack, ATK1, ATK2, BOSSES, BD, BPH, CHARS, CH, SP_MAX, HABITS, SQUASH, HORIZON, projY, startCarve };
 </script>
 </body>
 </html>
