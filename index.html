@@ -23,6 +23,13 @@ const W = 960, H = 540;
 const ARENA = { x: 64, y: 64, w: W - 128, h: H - 128 };
 const GATE = { x: W / 2, y: 26 };     // the threshold, beyond the top wall
 const RING = { x: 336, y: 338 };      // the worn practice ring
+/* 2.5D: the floor is seen at an angle, so it compresses toward the back;
+   the people standing on it do not. SQUASH is that compression, pivoting on
+   the middle of the room so the freed space becomes wall above and near
+   floor below. */
+const SQUASH = 0.8;
+const HORIZON = 64 + (540 - 128) / 2;      // the arena's own middle
+function projY(wy) { return HORIZON + (wy - HORIZON) * SQUASH; }
 const ACCENT = '#ff9e2c';             // ember — reserved for boss telegraphs & fire
 const COOL = '#9fc7ff';               // Nomad's one cool accent
 const canvas = document.getElementById('c');
@@ -706,6 +713,90 @@ function strokeGlyph(c, glyph, x, y, alpha, col, lw) {
 
 /* ---------- the arena, baked once: gate, pillars, fallen swords, the
    tally, the dead-script writing, the worn practice ring ---------- */
+/* The floor lying down frees a band at the top of the screen. That band is
+   the far wall of the room, and the gate stands in it — the one thing here
+   taller than Aldric. Baked once; it never changes. */
+const WALL_H = Math.round(projY(ARENA.y)) + 8;
+const WALL_BAKE = (() => {
+  const s = document.createElement('canvas');
+  s.width = W; s.height = WALL_H;
+  const c = s.getContext('2d');
+  const rr = mulberry32(20240817);
+
+  // the mass of it, darker as it climbs out of the brazier light
+  const g = c.createLinearGradient(0, 0, 0, WALL_H);
+  g.addColorStop(0, '#07080c'); g.addColorStop(0.55, '#101219'); g.addColorStop(1, '#191c25');
+  c.fillStyle = g; c.fillRect(0, 0, W, WALL_H);
+
+  // courses of block, each one a little different
+  const rowH = 22;
+  for (let y = WALL_H % rowH; y < WALL_H; y += rowH) {
+    const off = (Math.floor(y / rowH) % 2) * 38;
+    for (let x = -60 + off; x < W + 60; x += 76) {
+      const w2 = 76 - 3, h2 = rowH - 3;
+      const lit = Math.pow(y / WALL_H, 1.4);        // only the foot of it catches the fire
+      const v = (10 + rr() * 12) * (0.25 + lit * 0.95);
+      c.fillStyle = `rgb(${8 + v | 0},${9 + v | 0},${14 + v | 0})`;
+      c.fillRect(x, y, w2, h2);
+      c.fillStyle = 'rgba(255,255,255,0.03)';       // the lit top lip of each block
+      c.fillRect(x, y, w2, 1.5);
+      c.fillStyle = 'rgba(0,0,0,0.35)';
+      c.fillRect(x, y + h2 - 1.5, w2, 1.5);
+      if (rr() < 0.2) {                              // a crack, here and there
+        c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 1;
+        c.beginPath();
+        const sx = x + rr() * w2;
+        c.moveTo(sx, y + 2); c.lineTo(sx + (rr() - 0.5) * 12, y + h2 - 2); c.stroke();
+      }
+    }
+  }
+
+  // THE GATE — an arch that runs off the top of the frame
+  const gx = GATE.x, aw = 108, base = WALL_H;
+  c.save();
+  c.beginPath();
+  c.moveTo(gx - aw, base);
+  c.lineTo(gx - aw, 46);
+  c.quadraticCurveTo(gx, -34, gx + aw, 46);
+  c.lineTo(gx + aw, base);
+  c.closePath();
+  c.clip();
+  // what lies beyond it: nothing you can see, and a little ember light
+  const bg = c.createLinearGradient(0, 0, 0, base);
+  bg.addColorStop(0, '#05060a'); bg.addColorStop(0.7, '#140d08'); bg.addColorStop(1, '#2a1608');
+  c.fillStyle = bg; c.fillRect(gx - aw, 0, aw * 2, base);
+  c.globalAlpha = 0.5;
+  c.drawImage(GLOW_EMBER, gx - 120, base - 150, 240, 240);
+  c.globalAlpha = 1;
+  // the bars, still barring it
+  c.strokeStyle = '#191b23'; c.lineWidth = 9;
+  for (let i = -3; i <= 3; i++) { c.beginPath(); c.moveTo(gx + i * 30, 0); c.lineTo(gx + i * 30, base); c.stroke(); }
+  c.strokeStyle = '#22252f'; c.lineWidth = 7;
+  for (const yy of [60, 108]) { c.beginPath(); c.moveTo(gx - aw, yy); c.lineTo(gx + aw, yy); c.stroke(); }
+  c.restore();
+  // the arch ring itself
+  c.strokeStyle = '#2b2f3b'; c.lineWidth = 7;
+  c.beginPath();
+  c.moveTo(gx - aw, base); c.lineTo(gx - aw, 46);
+  c.quadraticCurveTo(gx, -34, gx + aw, 46);
+  c.lineTo(gx + aw, base);
+  c.stroke();
+  c.strokeStyle = 'rgba(0,0,0,0.65)'; c.lineWidth = 2;
+  c.stroke();
+  // voussoirs around the arch — the stones that hold it up
+  c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 1.5;
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10, ang = Math.PI * (1 - t);
+    const ox = gx + Math.cos(ang) * -aw, oy = 46 - Math.sin(ang) * 62;
+    c.beginPath(); c.moveTo(ox, oy); c.lineTo(gx + (ox - gx) * 1.18, oy - 12); c.stroke();
+  }
+
+  // the wall meets the floor in a hard dark line
+  c.fillStyle = 'rgba(0,0,0,0.55)';
+  c.fillRect(0, WALL_H - 7, W, 7);
+  return s;
+})();
+
 const BRAZIERS = [
   [ARENA.x + 34, ARENA.y + 34], [ARENA.x + ARENA.w - 34, ARENA.y + 34],
   [ARENA.x + 34, ARENA.y + ARENA.h - 34], [ARENA.x + ARENA.w - 34, ARENA.y + ARENA.h - 34]
@@ -879,32 +970,10 @@ const ARENA_BAKE = (() => {
     c.closePath(); c.fill();
   }
 
-  // ---- the ruined gate, barred, looming beyond the top wall ----
-  c.save();
-  c.fillStyle = '#0c0d13';
-  c.fillRect(GATE.x - 96, 0, 34, ARENA.y + 4);
-  c.fillRect(GATE.x + 62, 0, 34, ARENA.y + 4);
-  c.beginPath(); c.moveTo(GATE.x - 96, 8); c.lineTo(GATE.x - 62, 8); c.lineTo(GATE.x - 40, 0); c.lineTo(GATE.x - 96, 0); c.closePath(); c.fill();
-  c.beginPath(); c.moveTo(GATE.x + 96, 10); c.lineTo(GATE.x + 62, 10); c.lineTo(GATE.x + 34, 0); c.lineTo(GATE.x + 96, 0); c.closePath(); c.fill();
-  c.strokeStyle = 'rgba(120,125,145,0.18)'; c.lineWidth = 1.5;
-  c.beginPath(); c.moveTo(GATE.x - 62, 0); c.lineTo(GATE.x - 62, ARENA.y + 2); c.stroke();
-  c.beginPath(); c.moveTo(GATE.x + 62, 0); c.lineTo(GATE.x + 62, ARENA.y + 2); c.stroke();
-  const og = c.createLinearGradient(0, 0, 0, ARENA.y);
-  og.addColorStop(0, '#171310'); og.addColorStop(1, '#0e0c0c');
-  c.fillStyle = og;
-  c.fillRect(GATE.x - 62, 0, 124, ARENA.y + 2);
-  const sg = c.createLinearGradient(0, ARENA.y, 0, ARENA.y + 60);
-  sg.addColorStop(0, 'rgba(0,0,0,0.34)'); sg.addColorStop(1, 'rgba(0,0,0,0)');
-  c.fillStyle = sg;
-  c.fillRect(GATE.x - 96, ARENA.y, 192, 60);
-  // the bar across it — never explained
-  c.fillStyle = '#1b1c24';
-  c.fillRect(GATE.x - 70, 32, 140, 12);
-  c.strokeStyle = '#0a0b10'; c.lineWidth = 1.5;
-  c.strokeRect(GATE.x - 70, 32, 140, 12);
-  c.fillStyle = '#3c3f4d';
-  for (let i = -2; i <= 2; i++) { c.beginPath(); c.arc(GATE.x + i * 28, 38, 1.8, 0, Math.PI * 2); c.fill(); }
-  c.restore();
+  /* the gate itself now stands in WALL_BAKE, upright behind the room; only
+     its shadow on the floor belongs down here */
+  c.fillStyle = 'rgba(0,0,0,0.45)';
+  c.beginPath(); c.ellipse(GATE.x, ARENA.y + 16, 150, 26, 0, 0, Math.PI * 2); c.fill();
 
   // ---- tally scratches near the gate: neat rows decaying into chaos ----
   const tally = (cx, cy, disorder) => {
@@ -1267,6 +1336,7 @@ function resetFight() {
   P.flaskMax = flaskAllowance();
   P.flasks = P.flaskMax; P.face = 0; P.moveDirX = 1; P.moveDirY = 0;
   P.locked = false; P.act = null; P.hurtInv = 0; P.kbX = P.kbY = 0; P.flash = 0;
+  P.z = 0;
   P.dead = false; P.fellDone = false; P.swordDropDone = false; P.dagger1Done = false; P.deathFace = 0;
 
   const bd = BD();
@@ -1279,7 +1349,7 @@ function resetFight() {
   B.poise = 0; B.staggerT = 0; B.bleed = 0; B.defBreak = 0; B.wOff = 0.5; B.wLen = 86; B.tele = 0; B.flash = 0; B.dieT = 0;
   B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0; B.readCd = 0;
   B.hesitated = false; B.mourned = false; B.coreDim = 0; B.guarding = false;
-  B.hopT = 0; B.weaveSeed = Math.random() * 10;
+  B.hopT = 0; B.z = 0; B.weaveSeed = Math.random() * 10;
   B.buriedFake = false; B.obsT = 0.5; B.lastPAng = undefined;
   HABITS.adopted = []; HABITS.pending = null; HABITS.checkT = 3;
   HABITS.load();                          // the ledger for whoever stands at the gate
@@ -1512,7 +1582,7 @@ function damageBoss(dmg, noBleed) {
   const a = Math.atan2(P.y - B.y, P.x - B.x);
   camKick(a + Math.PI, 2.6);   // the frame leans into the blow
   spawnParticles(B.x + Math.cos(a) * B.r, B.y + Math.sin(a) * B.r, 10, '#e8e2d0', 170, 0.4);
-  G.dmgNums.push({ x: B.x + Math.cos(a) * (B.r + 10), y: B.y + Math.sin(a) * (B.r + 10) - 6, v: dmg, t: 0 });
+  G.dmgNums.push({ x: B.x + Math.cos(a) * (B.r + 10), y: bossHeadY() + 10, v: dmg, t: 0 });
   if (!lethal) sfx.hitArmor();   // the last blow belongs to his cry alone
   rumble(70, 0.15, 0.5);
   if (!noBleed && !lethal) addBleed();   // a coated cut banks its share of the debt
@@ -1607,6 +1677,15 @@ const BOSSES = {
 };
 function BD() { return BOSSES[B.defId] || BOSSES.aldric; }
 function BPH() { return BD().phases[B.phase2 ? 1 : 0]; }
+/* Everything the world draws sits on the flattened floor, but the two of them
+   stand up out of it. Anything meant to float over a head has to climb the
+   same distance the body did. */
+function liftOf(h) { return h / SQUASH; }
+function bossHeadY() {
+  const shr = B.phase2 ? 0.58 : 1;
+  return B.y - liftOf(BPH().height * 0.55 * shr + B.r * shr + 6);
+}
+function playerHeadY() { return P.y - liftOf(13 + 16); }
 
 function playerAttackActive() {
   const a = P.act;
@@ -1649,7 +1728,7 @@ function tryClash() {
     const dmg = Math.round(CH().heavyDmg * (1 + (a.chargeT || 0) / CH().chargeMax));
     damageBoss(dmg, true);
     B.defBreak += 1;
-    G.dmgNums.push({ x: B.x, y: B.y - B.r - 22, v: 'SUNDERED', t: 0 });
+    G.dmgNums.push({ x: B.x, y: bossHeadY() - 6, v: 'SUNDERED', t: 0 });
     breakPoise();
     B.x += Math.cos(ang) * 34; B.y += Math.sin(ang) * 34;
     B.x = clamp(B.x, ARENA.x + B.r, ARENA.x + ARENA.w - B.r);
@@ -1911,6 +1990,7 @@ function updatePlayer(dt) {
     P.act.t += dt * hasten;
     const a = P.act;
     if (a.type === 'roll') {
+      P.z = Math.max(0, (P.z || 0) - 200 * dt);
       const k = a.t / a.dur;
       const sp = C.rollSpeed * (1 - k * 0.75);
       P.x += a.dirX * sp * dt; P.y += a.dirY * sp * dt;
@@ -1982,6 +2062,11 @@ function updatePlayer(dt) {
       const full = ck >= 0.55;                     // enough of a charge to matter
       const power = heavy ? 1 + ck * 1.0 : 1;
 
+      // the spins leave the floor; everything else stays on it
+      if (spec.kind === 'spin' || spec.kind === 'rspin') {
+        P.z = Math.sin(clamp(et / a.dur, 0, 1) * Math.PI) * 13;
+      } else P.z = Math.max(0, (P.z || 0) - 150 * dt);
+
       // every swing carries the body — nobody fences flat-footed
       if (!a.charging && et > a.dur * 0.16 && et < a.dur * 0.62) {
         const step = (spec.glide || 60) * (1 + ck * 0.5);
@@ -2021,7 +2106,7 @@ function updatePlayer(dt) {
               if (a.chargeToll) {          // held to the toll: the armor itself gives, 1% forever
                 B.defBreak += 1;
                 sfx.crack();
-                G.dmgNums.push({ x: B.x, y: B.y - B.r - 22, v: 'SUNDERED', t: 0 });
+                G.dmgNums.push({ x: B.x, y: bossHeadY() - 6, v: 'SUNDERED', t: 0 });
                 G.shake = Math.max(G.shake, 10);
                 spawnParticles(B.x, B.y, 20, '#e8c15a', 280, 0.6);
                 spawnParticles(B.x, B.y, 8, '#f6e7c0', 340, 0.4);
@@ -2610,6 +2695,10 @@ function updateBoss(dt) {
       B.phaseT = pdur;
     }
 
+    // the blows that end on the stone rise off it first
+    const airborne = ph.k === 'w' && atk.phases.some(p2 => p2.impact);
+    B.z = airborne ? 26 * Math.pow(k, 1.7) : Math.max(0, (B.z || 0) - 260 * dt);
+
     // movement within a phase
     if (ph.move) {
       B.x += Math.cos(B.face) * ph.move.sp * dt;
@@ -2857,6 +2946,13 @@ function drawTracked(text, x, y, spacing) {
 
 function drawFloor() {
   ctx.drawImage(ARENA_BAKE, 0, 0, W, H);
+  // distance is darkness here — the back of the room barely catches the fire
+  const dep = ctx.createLinearGradient(0, ARENA.y - 10, 0, ARENA.y + ARENA.h * 0.62);
+  dep.addColorStop(0, 'rgba(0,0,0,0.58)');
+  dep.addColorStop(0.5, 'rgba(0,0,0,0.2)');
+  dep.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = dep;
+  ctx.fillRect(ARENA.x - 40, ARENA.y - 40, ARENA.w + 80, ARENA.h);
 
   // dynamic ritual-glow overlay (phase 2 lights the pentacle brighter — cheap, small)
   if (B.phase2) {
@@ -2873,15 +2969,18 @@ function drawFloor() {
     const dp = dist(P.x, P.y, c[0], c[1]), db = dist(B.x, B.y, c[0], c[1]);
     const rush = (dp < 90 && P.speedNow > 160) || (db < 110 && (B.state === 'attack' || B.hopT > 0));
     if (rush) fl *= 0.55 + 0.25 * Math.sin(G.time * 26 + c[1]);
-    ctx.globalAlpha = 0.16 * fl;
-    ctx.drawImage(GLOW_EMBER, c[0] - 90 * fl, c[1] - 90 * fl, 180 * fl, 180 * fl);
+    ctx.globalAlpha = 0.24 * fl;
+    ctx.drawImage(GLOW_EMBER, c[0] - 115 * fl, c[1] - 115 * fl, 230 * fl, 230 * fl);
     ctx.globalAlpha = 1;
+    ctx.save();
+    ctx.translate(c[0], c[1]); ctx.scale(1, 1 / SQUASH);      // fire climbs; it does not lie down
     ctx.fillStyle = `rgba(255,${150 + Math.floor(60 * fl)},60,${0.85 * fl})`;
     ctx.beginPath();
-    ctx.moveTo(c[0], c[1] - 12 - 5 * fl);
-    ctx.quadraticCurveTo(c[0] + 6, c[1] - 4, c[0], c[1] - 3);
-    ctx.quadraticCurveTo(c[0] - 6, c[1] - 4, c[0], c[1] - 12 - 5 * fl);
+    ctx.moveTo(0, -14 - 7 * fl);
+    ctx.quadraticCurveTo(6, -4, 0, -3);
+    ctx.quadraticCurveTo(-6, -4, 0, -14 - 7 * fl);
     ctx.fill();
+    ctx.restore();
     // a steady column of embers rising off each flame
     if (Math.random() < 0.25) spawnDrift(c[0] + rand(-4, 4), c[1] - 10, rand(-7, 7), rand(-52, -26), ACCENT, rand(0.6, 1.3), rand(1.2, 2.4));
     if (Math.random() < 0.1) spawnDrift(c[0] + rand(-7, 7), c[1] - 6, rand(-5, 5), rand(-30, -16), 'rgba(255,190,120,0.5)', rand(0.8, 1.5), 1.4);
@@ -3535,182 +3634,15 @@ function chargeK() {
 
 function drawPlayer() {
   if (P.dead) {
-    /* He goes down in stages: the legs give, he pitches onto the stone,
-       and then he simply goes to ash. His sword falls point-first and
-       stays standing — the arena is already full of them. */
-    const t = G.screenT, fx = P.deathX, fy = P.deathY, ff = P.deathFace || 0;
-
-    // the ground shadow flattens and spreads as he falls
-    const spread = clamp(t / 1.55, 0, 1);
+    // his last moments were staged upright — undo the floor's tilt for them
     ctx.save();
-    ctx.globalAlpha = clamp(1 - (t - 1.8) / 1.7, 0, 1) * 0.45;
-    ctx.fillStyle = '#000';
-    ctx.beginPath();
-    ctx.ellipse(fx, fy + 6, 14 + spread * 10, 6 + spread * 2, ff, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.translate(0, HORIZON); ctx.scale(1, 1 / SQUASH); ctx.translate(0, -HORIZON);
+    drawPlayerDeath();
     ctx.restore();
-
-    const pairDead = CH().id === 'pair';
-    if (pairDead) {
-      // the two scavenged blades fall from opening hands — flat on the stone,
-      // one a beat after the other, the way they were picked up
-      const drops = [
-        { at: 0.55, ang: ff + 0.9, off: 17, spin: 2.2, rest: 0.6 },
-        { at: 0.8, ang: ff - 1.2, off: 21, spin: -1.7, rest: -2.4 }
-      ];
-      for (const dr of drops) {
-        if (t <= dr.at) continue;
-        const k = clamp((t - dr.at) / 0.35, 0, 1);
-        const settle = 1 - Math.pow(1 - k, 3);
-        ctx.save();
-        ctx.globalAlpha = clamp(1 - (t - 4.0) / 1.0, 0, 1);
-        ctx.translate(fx + Math.cos(dr.ang) * dr.off + (1 - settle) * 4,
-                      fy + Math.sin(dr.ang) * dr.off + 3 - (1 - settle) * 7);
-        ctx.rotate(dr.rest + (1 - settle) * dr.spin);
-        ctx.scale(1, 0.85);                 // lying flat, not standing
-        drawShortBlade(20, false);
-        ctx.restore();
-      }
-    } else if (t > 0.6) {
-      // the given sword, dropped and driven point-first into the floor
-      const k = clamp((t - 0.6) / 0.4, 0, 1);
-      const settle = 1 - Math.pow(1 - k, 3);
-      ctx.save();
-      ctx.globalAlpha = clamp(1 - (t - 4.0) / 1.0, 0, 1);
-      ctx.translate(fx + Math.cos(ff + 1.1) * 20, fy + Math.sin(ff + 1.1) * 20 + 2);
-      ctx.rotate(Math.PI / 2 + (1 - settle) * 1.4);
-      drawSwordProfile(ctx, 30, {});
-      ctx.restore();
-    }
-
-    // the body
-    const bodyA = clamp(1 - (t - 1.85) / 1.5, 0, 1);
-    if (bodyA > 0) {
-      let sink, flat, lean, tip;
-      if (t < 0.75) {                       // the legs give out — he holds a moment on his knees
-        const k = t / 0.75;
-        const e = 1 - Math.pow(1 - k, 2);
-        sink = e * 4; flat = e * 0.3; lean = e * 0.2; tip = e * 0.18;
-      } else if (t < 1.55) {                // then pitches forward onto the stone
-        const k = (t - 0.75) / 0.8;
-        const e = k * k;                    // gathering speed as he goes over
-        sink = 4 + e * 6; flat = 0.3 + e * 0.62; lean = 0.2 + e * 0.55; tip = 0.18 + e * 1.0;
-      } else {
-        sink = 10; flat = 0.92; lean = 0.75; tip = 1.18;
-      }
-      ctx.save();
-      ctx.globalAlpha = bodyA;
-      ctx.translate(fx + Math.cos(ff) * tip * 7, fy + sink + Math.sin(ff) * tip * 7);
-      ctx.rotate(ff + lean * 0.25);
-      ctx.scale(1 - flat * 0.1 + tip * 0.16, 1 - flat * 0.66);   // stretches out as he goes flat
-
-      if (pairDead) {
-        // the same man in the other clothes: torn short cloak pooling out
-        ctx.fillStyle = '#4a3630';
-        ctx.beginPath();
-        ctx.moveTo(-1, -8);
-        ctx.quadraticCurveTo(-12, -9 - flat * 4, -19 - flat * 6, -4);
-        ctx.lineTo(-15 - flat * 6, -1);
-        ctx.lineTo(-20 - flat * 6, 1);
-        ctx.lineTo(-14 - flat * 6, 4);
-        ctx.quadraticCurveTo(-12, 8 + flat * 4, -1, 8);
-        ctx.closePath(); ctx.fill();
-        ctx.strokeStyle = '#241a17'; ctx.lineWidth = 1; ctx.stroke();
-
-        // the narrow leather torso and the one looted pauldron
-        const bgP = ctx.createRadialGradient(-2, -2, 1.5, 0, 0, 11);
-        bgP.addColorStop(0, '#8d8377'); bgP.addColorStop(0.55, '#5f574d'); bgP.addColorStop(1, '#3a342e');
-        ctx.fillStyle = bgP;
-        ctx.beginPath(); ctx.ellipse(0, 0, 10, 8.5, 0, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = '#221d19'; ctx.lineWidth = 1.3; ctx.stroke();
-        ctx.fillStyle = '#9aa0a8';
-        ctx.beginPath(); ctx.arc(-1, -8.5, 4.6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        ctx.strokeStyle = 'rgba(224,216,198,0.6)'; ctx.lineWidth = 1.4;
-        ctx.beginPath(); ctx.moveTo(-5, -7); ctx.lineTo(4, 6); ctx.stroke();
-
-        // the hood settles over the face; the two dull points go out
-        ctx.save();
-        ctx.rotate(lean * 0.5);
-        ctx.fillStyle = '#4a3630';
-        ctx.beginPath();
-        ctx.moveTo(13, 0);
-        ctx.quadraticCurveTo(9, -9.5, -2, -7.5);
-        ctx.quadraticCurveTo(-6, 0, -2, 7.5);
-        ctx.quadraticCurveTo(9, 9.5, 13, 0);
-        ctx.closePath(); ctx.fill();
-        ctx.strokeStyle = '#241a17'; ctx.lineWidth = 1.1; ctx.stroke();
-        ctx.fillStyle = '#100d0c';
-        ctx.beginPath(); ctx.ellipse(7.5, 0, 4.6, 4.4, 0, 0, Math.PI * 2); ctx.fill();
-        const eyeP = clamp(1 - t / 1.45, 0, 1);
-        if (eyeP > 0.02) {
-          ctx.globalAlpha = bodyA * eyeP * 0.55;
-          ctx.drawImage(GLOW_RED, 4, -6, 12, 12);
-          ctx.globalAlpha = bodyA;
-          ctx.fillStyle = `rgba(226,124,100,${eyeP * 0.85})`;
-          ctx.beginPath(); ctx.arc(8.6, -1.7, 0.95, 0, Math.PI * 2); ctx.fill();
-          ctx.beginPath(); ctx.arc(8.6, 1.7, 0.95, 0, Math.PI * 2); ctx.fill();
-        }
-        ctx.restore();
-      } else {
-        // cloak, pooling out behind him
-        ctx.fillStyle = '#2d3a63';
-        ctx.beginPath();
-        ctx.moveTo(-2, -9);
-        ctx.quadraticCurveTo(-16, -10 - flat * 5, -25 - flat * 8, -4);
-        ctx.lineTo(-25 - flat * 8, 5);
-        ctx.quadraticCurveTo(-16, 10 + flat * 5, -2, 9);
-        ctx.closePath(); ctx.fill();
-
-        // torso
-        const bg = ctx.createRadialGradient(-3, -3, 2, 0, 0, 13);
-        bg.addColorStop(0, '#c9d2e2'); bg.addColorStop(0.6, '#98a3ba'); bg.addColorStop(1, '#5f6981');
-        ctx.fillStyle = bg;
-        ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = '#2b3140'; ctx.lineWidth = 1.5; ctx.stroke();
-
-        // pauldrons
-        ctx.fillStyle = '#8894ab';
-        ctx.beginPath(); ctx.arc(-1, -10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        ctx.beginPath(); ctx.arc(-1, 10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-
-        // helm, tipping forward until it rests on the ground
-        ctx.save();
-        ctx.rotate(lean * 0.5);
-        const hg = ctx.createLinearGradient(2, 0, 16, 0);
-        hg.addColorStop(0, '#98a3ba'); hg.addColorStop(1, '#d7deeb');
-        ctx.fillStyle = hg;
-        ctx.beginPath(); ctx.moveTo(19, 0); ctx.lineTo(2, -8.5); ctx.lineTo(6, 0); ctx.lineTo(2, 8.5); ctx.closePath(); ctx.fill();
-        ctx.strokeStyle = '#232938'; ctx.lineWidth = 1.2; ctx.stroke();
-        // the light behind the visor goes out as he falls
-        const eye = clamp(1 - t / 1.45, 0, 1);
-        if (eye > 0.02) {
-          ctx.globalAlpha = bodyA * eye * 0.7;
-          ctx.drawImage(GLOW_BLUE, 3, -7, 14, 14);
-          ctx.globalAlpha = bodyA;
-          ctx.strokeStyle = `rgba(159,199,255,${eye})`;
-          ctx.lineWidth = 1.8;
-          ctx.beginPath(); ctx.moveTo(10, -3.6); ctx.lineTo(14, 0); ctx.lineTo(10, 3.6); ctx.stroke();
-        }
-        ctx.restore();
-      }
-      ctx.restore();
-    }
-
-    // and what is left of him leaves
-    const wt = clamp(t - 2.0, 0, 3.2);
-    if (wt > 0 && wt < 3.2) {
-      const wy = fy - 10 - wt * 26;
-      const wa = clamp(1 - wt / 3.2, 0, 0.85) * clamp(wt / 0.4, 0, 1);
-      const wx = fx + Math.sin(t * 2.0) * 9;
-      ctx.globalAlpha = wa;
-      ctx.drawImage(pairDead ? GLOW_RED : GLOW_BLUE, wx - 14, wy - 14, 28, 28);
-      ctx.globalAlpha = wa * 0.9;
-      ctx.fillStyle = pairDead ? '#f0d9cf' : '#dceaff';
-      ctx.beginPath(); ctx.arc(wx, wy, 3, 0, Math.PI * 2); ctx.fill();
-      ctx.globalAlpha = 1;
-    }
     return;
   }
+
+
 
   // roll afterimages
   for (const t of P.trail) {
@@ -3741,8 +3673,15 @@ function drawPlayer() {
 
   ctx.save();
   ctx.translate(P.x, P.y);
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.beginPath(); ctx.ellipse(0, 6, 14, 6, 0, 0, Math.PI * 2); ctx.fill();
+  // the shadow stays on the floor, in the floor's own flattened space
+  const pzs = 1 + (P.z || 0) / 40;
+  ctx.fillStyle = `rgba(0,0,0,${0.5 / pzs})`;
+  ctx.beginPath(); ctx.ellipse(0, 8, 14 * pzs, 5.5 * pzs, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = `rgba(0,0,0,${0.2 / pzs})`;
+  ctx.beginPath(); ctx.ellipse(0, 8, 21 * pzs, 8 * pzs, 0, 0, Math.PI * 2); ctx.fill();
+  // and he stands up out of it
+  ctx.scale(1, 1 / SQUASH);
+  ctx.translate(0, -(P.act && P.act.type === 'roll' ? 4 : 13) - (P.z || 0));
 
   const rolling = P.act && P.act.type === 'roll';
   const flasking = P.act && P.act.type === 'flask';
@@ -3773,7 +3712,7 @@ function drawPlayer() {
   if (P.locked && B.state !== 'dying' && B.state !== 'carve') {
     const pu = 1 + 0.1 * Math.sin(G.time * 6);
     ctx.save();
-    ctx.translate(B.x, B.y - B.r - 26);
+    ctx.translate(B.x, bossHeadY() - 8);
     ctx.scale(pu, pu);
     ctx.strokeStyle = '#eef2fa';
     ctx.lineWidth = 2;
@@ -3781,6 +3720,184 @@ function drawPlayer() {
     ctx.fillStyle = '#eef2fa';
     ctx.beginPath(); ctx.arc(0, 0, 2.2, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+  }
+}
+
+/* the three stages of going down, staged upright */
+function drawPlayerDeath() {
+  /* He goes down in stages: the legs give, he pitches onto the stone,
+     and then he simply goes to ash. His sword falls point-first and
+     stays standing — the arena is already full of them. */
+  const t = G.screenT, fx = P.deathX, fy = P.deathY, ff = P.deathFace || 0;
+
+  // the ground shadow flattens and spreads as he falls
+  const spread = clamp(t / 1.55, 0, 1);
+  ctx.save();
+  ctx.globalAlpha = clamp(1 - (t - 1.8) / 1.7, 0, 1) * 0.45;
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(fx, fy + 6, 14 + spread * 10, 6 + spread * 2, ff, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  const pairDead = CH().id === 'pair';
+  if (pairDead) {
+    // the two scavenged blades fall from opening hands — flat on the stone,
+    // one a beat after the other, the way they were picked up
+    const drops = [
+      { at: 0.55, ang: ff + 0.9, off: 17, spin: 2.2, rest: 0.6 },
+      { at: 0.8, ang: ff - 1.2, off: 21, spin: -1.7, rest: -2.4 }
+    ];
+    for (const dr of drops) {
+      if (t <= dr.at) continue;
+      const k = clamp((t - dr.at) / 0.35, 0, 1);
+      const settle = 1 - Math.pow(1 - k, 3);
+      ctx.save();
+      ctx.globalAlpha = clamp(1 - (t - 4.0) / 1.0, 0, 1);
+      ctx.translate(fx + Math.cos(dr.ang) * dr.off + (1 - settle) * 4,
+                    fy + Math.sin(dr.ang) * dr.off + 3 - (1 - settle) * 7);
+      ctx.rotate(dr.rest + (1 - settle) * dr.spin);
+      ctx.scale(1, 0.85);                 // lying flat, not standing
+      drawShortBlade(20, false);
+      ctx.restore();
+    }
+  } else if (t > 0.6) {
+    // the given sword, dropped and driven point-first into the floor
+    const k = clamp((t - 0.6) / 0.4, 0, 1);
+    const settle = 1 - Math.pow(1 - k, 3);
+    ctx.save();
+    ctx.globalAlpha = clamp(1 - (t - 4.0) / 1.0, 0, 1);
+    ctx.translate(fx + Math.cos(ff + 1.1) * 20, fy + Math.sin(ff + 1.1) * 20 + 2);
+    ctx.rotate(Math.PI / 2 + (1 - settle) * 1.4);
+    drawSwordProfile(ctx, 30, {});
+    ctx.restore();
+  }
+
+  // the body
+  const bodyA = clamp(1 - (t - 1.85) / 1.5, 0, 1);
+  if (bodyA > 0) {
+    let sink, flat, lean, tip;
+    if (t < 0.75) {                       // the legs give out — he holds a moment on his knees
+      const k = t / 0.75;
+      const e = 1 - Math.pow(1 - k, 2);
+      sink = e * 4; flat = e * 0.3; lean = e * 0.2; tip = e * 0.18;
+    } else if (t < 1.55) {                // then pitches forward onto the stone
+      const k = (t - 0.75) / 0.8;
+      const e = k * k;                    // gathering speed as he goes over
+      sink = 4 + e * 6; flat = 0.3 + e * 0.62; lean = 0.2 + e * 0.55; tip = 0.18 + e * 1.0;
+    } else {
+      sink = 10; flat = 0.92; lean = 0.75; tip = 1.18;
+    }
+    ctx.save();
+    ctx.globalAlpha = bodyA;
+    ctx.translate(fx + Math.cos(ff) * tip * 7, fy + sink + Math.sin(ff) * tip * 7);
+    ctx.rotate(ff + lean * 0.25);
+    ctx.scale(1 - flat * 0.1 + tip * 0.16, 1 - flat * 0.66);   // stretches out as he goes flat
+
+    if (pairDead) {
+      // the same man in the other clothes: torn short cloak pooling out
+      ctx.fillStyle = '#4a3630';
+      ctx.beginPath();
+      ctx.moveTo(-1, -8);
+      ctx.quadraticCurveTo(-12, -9 - flat * 4, -19 - flat * 6, -4);
+      ctx.lineTo(-15 - flat * 6, -1);
+      ctx.lineTo(-20 - flat * 6, 1);
+      ctx.lineTo(-14 - flat * 6, 4);
+      ctx.quadraticCurveTo(-12, 8 + flat * 4, -1, 8);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#241a17'; ctx.lineWidth = 1; ctx.stroke();
+
+      // the narrow leather torso and the one looted pauldron
+      const bgP = ctx.createRadialGradient(-2, -2, 1.5, 0, 0, 11);
+      bgP.addColorStop(0, '#8d8377'); bgP.addColorStop(0.55, '#5f574d'); bgP.addColorStop(1, '#3a342e');
+      ctx.fillStyle = bgP;
+      ctx.beginPath(); ctx.ellipse(0, 0, 10, 8.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#221d19'; ctx.lineWidth = 1.3; ctx.stroke();
+      ctx.fillStyle = '#9aa0a8';
+      ctx.beginPath(); ctx.arc(-1, -8.5, 4.6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = 'rgba(224,216,198,0.6)'; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(-5, -7); ctx.lineTo(4, 6); ctx.stroke();
+
+      // the hood settles over the face; the two dull points go out
+      ctx.save();
+      ctx.rotate(lean * 0.5);
+      ctx.fillStyle = '#4a3630';
+      ctx.beginPath();
+      ctx.moveTo(13, 0);
+      ctx.quadraticCurveTo(9, -9.5, -2, -7.5);
+      ctx.quadraticCurveTo(-6, 0, -2, 7.5);
+      ctx.quadraticCurveTo(9, 9.5, 13, 0);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#241a17'; ctx.lineWidth = 1.1; ctx.stroke();
+      ctx.fillStyle = '#100d0c';
+      ctx.beginPath(); ctx.ellipse(7.5, 0, 4.6, 4.4, 0, 0, Math.PI * 2); ctx.fill();
+      const eyeP = clamp(1 - t / 1.45, 0, 1);
+      if (eyeP > 0.02) {
+        ctx.globalAlpha = bodyA * eyeP * 0.55;
+        ctx.drawImage(GLOW_RED, 4, -6, 12, 12);
+        ctx.globalAlpha = bodyA;
+        ctx.fillStyle = `rgba(226,124,100,${eyeP * 0.85})`;
+        ctx.beginPath(); ctx.arc(8.6, -1.7, 0.95, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(8.6, 1.7, 0.95, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    } else {
+      // cloak, pooling out behind him
+      ctx.fillStyle = '#2d3a63';
+      ctx.beginPath();
+      ctx.moveTo(-2, -9);
+      ctx.quadraticCurveTo(-16, -10 - flat * 5, -25 - flat * 8, -4);
+      ctx.lineTo(-25 - flat * 8, 5);
+      ctx.quadraticCurveTo(-16, 10 + flat * 5, -2, 9);
+      ctx.closePath(); ctx.fill();
+
+      // torso
+      const bg = ctx.createRadialGradient(-3, -3, 2, 0, 0, 13);
+      bg.addColorStop(0, '#c9d2e2'); bg.addColorStop(0.6, '#98a3ba'); bg.addColorStop(1, '#5f6981');
+      ctx.fillStyle = bg;
+      ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#2b3140'; ctx.lineWidth = 1.5; ctx.stroke();
+
+      // pauldrons
+      ctx.fillStyle = '#8894ab';
+      ctx.beginPath(); ctx.arc(-1, -10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(-1, 10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+      // helm, tipping forward until it rests on the ground
+      ctx.save();
+      ctx.rotate(lean * 0.5);
+      const hg = ctx.createLinearGradient(2, 0, 16, 0);
+      hg.addColorStop(0, '#98a3ba'); hg.addColorStop(1, '#d7deeb');
+      ctx.fillStyle = hg;
+      ctx.beginPath(); ctx.moveTo(19, 0); ctx.lineTo(2, -8.5); ctx.lineTo(6, 0); ctx.lineTo(2, 8.5); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#232938'; ctx.lineWidth = 1.2; ctx.stroke();
+      // the light behind the visor goes out as he falls
+      const eye = clamp(1 - t / 1.45, 0, 1);
+      if (eye > 0.02) {
+        ctx.globalAlpha = bodyA * eye * 0.7;
+        ctx.drawImage(GLOW_BLUE, 3, -7, 14, 14);
+        ctx.globalAlpha = bodyA;
+        ctx.strokeStyle = `rgba(159,199,255,${eye})`;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath(); ctx.moveTo(10, -3.6); ctx.lineTo(14, 0); ctx.lineTo(10, 3.6); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // and what is left of him leaves
+  const wt = clamp(t - 2.0, 0, 3.2);
+  if (wt > 0 && wt < 3.2) {
+    const wy = fy - 10 - wt * 26;
+    const wa = clamp(1 - wt / 3.2, 0, 0.85) * clamp(wt / 0.4, 0, 1);
+    const wx = fx + Math.sin(t * 2.0) * 9;
+    ctx.globalAlpha = wa;
+    ctx.drawImage(pairDead ? GLOW_RED : GLOW_BLUE, wx - 14, wy - 14, 28, 28);
+    ctx.globalAlpha = wa * 0.9;
+    ctx.fillStyle = pairDead ? '#f0d9cf' : '#dceaff';
+    ctx.beginPath(); ctx.arc(wx, wy, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -3802,9 +3919,15 @@ function drawBoss() {
   if (B.phase2) shr = 0.58;
   else if (B.state === 'break') shr = 1 - 0.42 * clamp((B.stateT - 2.35) / 0.7, 0, 1);
 
-  // shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.beginPath(); ctx.ellipse(0, 10 * shr, 38 * shr, 14 * shr, 0, 0, Math.PI * 2); ctx.fill();
+  // shadow — pooled on the stone, flattened with the floor
+  const zsh = 1 + (B.z || 0) / 70;                 // it spreads and fades as he leaves the ground
+  ctx.fillStyle = `rgba(0,0,0,${0.46 / zsh})`;
+  ctx.beginPath(); ctx.ellipse(0, 12 * shr, 38 * shr * zsh, 13 * shr * zsh, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = `rgba(0,0,0,${0.18 / zsh})`;
+  ctx.beginPath(); ctx.ellipse(0, 12 * shr, 56 * shr * zsh, 20 * shr * zsh, 0, 0, Math.PI * 2); ctx.fill();
+  // he rises out of it further than you do — that is most of what he is
+  ctx.scale(1, 1 / SQUASH);
+  ctx.translate(0, -(BPH().height * 0.55) * shr - (B.z || 0));
 
   ctx.rotate(B.face);
   ctx.scale(shr, shr);
@@ -4115,7 +4238,7 @@ function drawBoss() {
     ctx.textAlign = 'center';
     ctx.fillStyle = '#ffe9a8';
     ctx.font = '600 13px Georgia, serif';
-    ctx.fillText('STANCE BROKEN', B.x, B.y - B.r - 34);
+    ctx.fillText('STANCE BROKEN', B.x, bossHeadY() - 12);
     ctx.globalAlpha = alpha;
     for (let i = 0; i < 3; i++) {
       const a = G.time * 4 + i * 2.1;
@@ -4144,7 +4267,7 @@ function drawBoss() {
     for (let i = 0; i < 3; i++) {
       const a = G.time * 4 + i * 2.1;
       ctx.globalAlpha = alpha * 0.85;
-      ctx.beginPath(); ctx.arc(B.x + Math.cos(a) * 22, B.y + Math.sin(a) * 9 - B.r - 14, 2.4, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(B.x + Math.cos(a) * 22, bossHeadY() + Math.sin(a) * 9 - 8, 2.4, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
   }
@@ -4155,7 +4278,7 @@ function drawBoss() {
     ctx.save();
     ctx.globalAlpha = alpha * pu;
     ctx.drawImage(GLOW_GOLD, B.x - 14, B.y - 14, 28, 28);
-    ctx.translate(B.x, B.y - B.r - 18);
+    ctx.translate(B.x, bossHeadY());
     ctx.rotate(Math.PI / 4);
     ctx.fillStyle = '#ffe9a8';
     ctx.fillRect(-3.5, -3.5, 7, 7);
@@ -4169,7 +4292,7 @@ function drawBoss() {
     ctx.textAlign = 'center';
     ctx.fillStyle = '#d8654e';
     ctx.font = '600 13px Georgia, serif';
-    ctx.fillText('BLEEDING', B.x, B.y - B.r - 34);
+    ctx.fillText('BLEEDING', B.x, bossHeadY() - 12);
     ctx.textAlign = 'left';
     ctx.restore();
   }
@@ -4521,7 +4644,12 @@ function wrapText(text, cx, y, maxW, lh) {
 }
 
 function drawTitle() {
+  // the same room, seen the same way, behind the name of the place
+  ctx.drawImage(WALL_BAKE, 0, 0);
+  ctx.save();
+  ctx.translate(0, HORIZON); ctx.scale(1, SQUASH); ctx.translate(0, -HORIZON);
   drawFloor(); drawFogWall();
+  ctx.restore();
   ctx.fillStyle = 'rgba(5,6,10,0.74)';
   ctx.fillRect(0, 0, W, H);
 
@@ -4664,6 +4792,11 @@ function drawWorld() {
   ctx.translate(W / 2, H / 2);
   ctx.scale(G.cam.zoom, G.cam.zoom);
   ctx.translate(-G.cam.x, -G.cam.y);
+  // the ground lies down; whatever stands on it will push back up
+  ctx.drawImage(WALL_BAKE, 0, 0);          // the far wall, standing straight up
+
+  ctx.save();
+  ctx.translate(0, HORIZON); ctx.scale(1, SQUASH); ctx.translate(0, -HORIZON);
 
   drawFloor();
   drawDebris();
@@ -4677,9 +4810,28 @@ function drawWorld() {
   drawParticles();
   drawDamageNumbers();
   drawFogWall();
+  ctx.restore();                           // done with the floor plane
+
+  // the slab has a thickness — the lip of it, standing up at the near edge
+  {
+    const fy = projY(ARENA.y + ARENA.h);
+    const kg = ctx.createLinearGradient(0, fy, 0, fy + 14);
+    kg.addColorStop(0, '#23262f'); kg.addColorStop(1, '#0a0b10');
+    ctx.fillStyle = kg;
+    ctx.fillRect(ARENA.x - 6, fy, ARENA.w + 12, 14);
+    ctx.fillStyle = 'rgba(255,158,44,0.07)';        // the braziers just reach it
+    ctx.fillRect(ARENA.x - 6, fy, ARENA.w + 12, 2);
+  }
+
+  // the near edge of the room, falling away into the dark under your feet
+  const ne = ctx.createLinearGradient(0, projY(ARENA.y + ARENA.h) - 26, 0, H);
+  ne.addColorStop(0, 'rgba(0,0,0,0)'); ne.addColorStop(1, 'rgba(0,0,0,0.92)');
+  ctx.fillStyle = ne;
+  ctx.fillRect(-40, projY(ARENA.y + ARENA.h) - 26, W + 80, H);
+
   const v = ctx.createRadialGradient(W / 2, H / 2, 220, W / 2, H / 2, 560);
   v.addColorStop(0, 'rgba(0,0,0,0)');
-  v.addColorStop(1, 'rgba(0,0,0,0.42)');
+  v.addColorStop(1, 'rgba(0,0,0,0.34)');
   ctx.fillStyle = v;
   ctx.fillRect(0, 0, W, H);
 
