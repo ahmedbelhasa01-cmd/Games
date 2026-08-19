@@ -254,6 +254,14 @@ const sfx = {
     _tone(ac, 'sine', 329, 329, 1.8, 0.15, t);
   }); },
   fog() { this._run((ac, t) => _noise(ac, 0.9, 'lowpass', 500, 150, 0.25, t)); },
+  // stone remembering it is a man — a long grind, a breath of dust, and the haft tearing free
+  awaken() { this._run((ac, t) => {
+    _noise(ac, 1.1, 'lowpass', 320, 90, 0.5, t);
+    _tone(ac, 'sine', 58, 24, 1.4, 0.5, t);
+    _tone(ac, 'sawtooth', 44, 30, 1.0, 0.1, t + 0.15);
+    _noise(ac, 0.5, 'bandpass', 900, 300, 0.24, t + 0.55);
+    _tone(ac, 'sine', 120, 42, 0.5, 0.35, t + 0.8);
+  }); },
   parry() { this._run((ac, t) => {
     _tone(ac, 'square', 1400, 950, 0.09, 0.28, t);
     _tone(ac, 'sine', 2300, 1750, 0.16, 0.22, t);
@@ -1461,7 +1469,8 @@ function resetFight() {
   B.r = bd.phases[0].r;
   B.x = bd.entry.x; B.y = ARENA.y + ARENA.h / 2;
   B.hp = B.hpMax; B.hpGhost = B.hpMax; B.face = bd.entry.face;
-  B.phase2 = false; B.state = 'idle'; B.stateT = 0; B.cd = 1.1;
+  B.phase2 = false; B.state = bd.entry.dormant ? 'dormant' : 'idle'; B.stateT = 0; B.cd = 1.1;
+  B.awakeK = bd.entry.dormant ? 0 : 1;
   B.atk = null; B.atkSet = 1; B.setRef = null; B.phaseIdx = 0; B.phaseT = 0; B.hitDone = false;
   B.poise = 0; B.staggerT = 0; B.bleed = 0; B.defBreak = 0; B.wOff = 0.5; B.wLen = 86; B.tele = 0; B.flash = 0; B.dieT = 0;
   B.broken = false; B.breakStep = 0; B.dazeT = 0; B.chainCount = 0; B.readCd = 0;
@@ -1818,7 +1827,7 @@ const BOSSES = {
     id: 'aldric', name: 'ALDRIC',
     hpMax: 1200,
     poiseMax: 6,                    // clean hits before his stance gives
-    entry: { x: ARENA.x + ARENA.w - 170, face: Math.PI },
+    entry: { x: ARENA.x + ARENA.w - 170, face: Math.PI, dormant: true },
     phases: [
       { id: 'maul',  set: ATK1, r: 34, height: 46, wLen: 86,
         clash: CLASH_SET1, choose: chooseAttack1, idle: aldricIdleMaul },
@@ -1826,7 +1835,8 @@ const BOSSES = {
         clash: CLASH_SET2, choose: chooseAttack2, idle: aldricIdleShard }
     ],
     /* states the engine hands straight back to him */
-    states: { carve: aldricCarve, break: aldricBreak, hesitate: aldricHesitate, read: aldricRead },
+    states: { carve: aldricCarve, break: aldricBreak, hesitate: aldricHesitate, read: aldricRead,
+      dormant: aldricDormant, wake: aldricWake },
     /* the half-health decision, and what is left when he loses */
     transition: { at: 0.5, state: 'break' },
     onDeath: startCarve
@@ -2716,6 +2726,45 @@ function aldricIdleShard(dt, angToP, d) {
   }
 }
 
+/* ---- the vigil: he has stood here so long the dust has claimed him.
+   Statue-still, maul planted head-down in the stone, until someone comes
+   near enough to be worth waking for — or lays a hand on him. ---- */
+function aldricDormant(dt, angToP) {
+  B.tele = 0; B.gaitAmp = 0; B.speedNow = 0; B.cd = 1.1;
+  // years of stillness — a grain of it lets go now and then
+  if (Math.random() < dt * 0.7) {
+    const sa = B.face + (Math.random() < 0.5 ? 1 : -1) * rand(0.8, 2.2);
+    spawnDrift(B.x + Math.cos(sa) * 24, B.y + Math.sin(sa) * 20, rand(-4, 4), rand(8, 20), 'rgba(150,146,138,0.4)', rand(0.6, 1.2), rand(1, 1.8));
+  }
+  if (P.dead || G.cinematic) return;
+  if (dist(P.x, P.y, B.x, B.y) < 185 || B.hp < B.hpMax) {
+    B.state = 'wake'; B.stateT = 0;
+    sfx.awaken(); rumble(500, 0.5, 0.3);
+  }
+}
+/* ---- and the waking: the dust of years off his shoulders, the maul torn
+   out of the floor, and only then the name over the bar ---- */
+function aldricWake(dt, angToP) {
+  B.tele = 0;
+  // the first motion shakes the years loose
+  if (B.stateT < 0.7 && Math.random() < dt * 26) {
+    const sa = B.face + (Math.random() < 0.5 ? 1 : -1) * rand(0.7, 2.4);
+    spawnDrift(B.x + Math.cos(sa) * rand(16, 28), B.y + Math.sin(sa) * rand(8, 22),
+      rand(-8, 8), rand(14, 34), 'rgba(160,152,138,0.55)', rand(0.5, 1.1), rand(1.2, 2.4));
+  }
+  // grit shearing up where the haft leaves the floor
+  if (B.stateT > 0.35 && B.stateT < 1.0 && Math.random() < dt * 30) {
+    spawnDrift(B.x + Math.cos(B.face) * 10 + rand(-6, 6), B.y + rand(0, 8),
+      rand(-14, 14), rand(-26, -6), 'rgba(140,132,118,0.6)', rand(0.3, 0.7), rand(1.2, 2.2));
+  }
+  if (B.stateT >= 0.5) B.face = turnToward(B.face, angToP, 2.4 * dt);
+  // the head of it comes free of the stone
+  if (B.stateT - dt < 0.8 && B.stateT >= 0.8) { camKick(Math.PI / 2, 3); G.shake = Math.max(G.shake, 2.5); }
+  // and the name is spoken over the bar
+  if (B.stateT - dt < 0.9 && B.stateT >= 0.9) G.nameFade = 3.2;
+  if (B.stateT >= 1.9) { B.state = 'idle'; B.stateT = 0; B.cd = 1.0; }
+}
+
 function updateBoss(dt) {
   // he walks too — measure it from the ground he actually covers
   const bpx = B.x, bpy = B.y;
@@ -2737,8 +2786,15 @@ function updateBoss(dt) {
   B.readCd = Math.max(0, B.readCd - dt);
   B.stateT += dt;
 
+  /* how present he is to the HUD: nothing while he is furniture, everything
+     once he moves — and self-healing to 1 if anything skips the waking */
+  B.awakeK = B.state === 'dormant' ? 0
+    : B.state === 'wake' ? clamp((B.stateT - 0.6) / 1.0, 0, 1)
+    : Math.min(1, (B.awakeK === undefined ? 1 : B.awakeK) + 2.5 * dt);
+
   /* ---- he watches: spacing and orbit, sampled every half second ---- */
-  if (HABITS.data && G.screen === 'fight' && !P.dead && !G.cinematic) {
+  if (HABITS.data && G.screen === 'fight' && !P.dead && !G.cinematic
+      && B.state !== 'dormant' && B.state !== 'wake') {
     B.obsT = (B.obsT || 0) - dt;
     if (B.obsT <= 0) {
       B.obsT = 0.5;
@@ -3093,7 +3149,7 @@ function update(dt) {
         B.defId = 'aldric';
         resetFight();
         G.enterFade = 2.0;
-        G.nameFade = G.firstFight ? 3.2 : 0;
+        G.nameFade = 0;               // the name waits until he moves
         G.firstFight = false;
         goto('fight');
       }
@@ -4448,6 +4504,13 @@ function drawBoss() {
     ctx.rotate(fB * pitch);
   } else if (B.state === 'break' && B.breakStep >= 1 && B.breakStep < 3) {
     ctx.scale(1, 0.9); ctx.translate(0, 2);
+  } else if (B.state === 'dormant' || B.state === 'wake') {
+    // bowed over the planted maul, the way the years left him; waking straightens him
+    const k = B.state === 'dormant' ? 0 : clamp(B.stateT / 0.9, 0, 1);
+    const e = k * k * (3 - 2 * k);
+    const fB2 = Math.cos(B.face) < 0 ? -1 : 1;
+    ctx.translate(fB2 * (1 - e) * 2.5, (1 - e) * 3);
+    ctx.rotate(fB2 * 0.09 * (1 - e));
   }
 
   if (B.phase2) {
@@ -4709,8 +4772,24 @@ function drawBoss() {
 
   // ---- the sceptre-maul: full size always (the shard never shrinks) ----
   ctx.save();
+  const planted = B.state === 'dormant' || B.state === 'wake';
+  if (planted) {
+    /* the head of it is buried in the stone: whatever hangs below the floor
+       line simply isn't drawn, so the pull reads as it tearing free */
+    ctx.beginPath(); ctx.rect(-220, -320, 440, 332); ctx.clip();
+  }
   ctx.translate(flipB * (B.phase2 ? 10 : 9 * shr), B.phase2 ? -21 : -26);   // pinned to the drawn hand of each form
-  ctx.rotate(B.face + B.wOff);
+  let wAng = B.face + B.wOff;
+  if (planted) {
+    // straight down through his grip while he sleeps; the wake hauls it up to the rest pose
+    const k = B.state === 'wake' ? clamp((B.stateT - 0.35) / 0.85, 0, 1) : 0;
+    const e = k * k * (3 - 2 * k);
+    let dAng = (B.face + B.wOff - Math.PI / 2) % (Math.PI * 2);
+    if (dAng > Math.PI) dAng -= Math.PI * 2;
+    if (dAng < -Math.PI) dAng += Math.PI * 2;
+    wAng = Math.PI / 2 + dAng * e;
+  }
+  ctx.rotate(wAng);
   const L = B.wLen;
   if (!B.broken) {
     ctx.strokeStyle = F('#4a3b2c'); ctx.lineWidth = 6;
@@ -5029,8 +5108,11 @@ function drawHUD() {
     ctx.fillRect(0, 0, W, H);
   }
 
-  // ---- boss banner — only for the named ----
-  if (BD().name && (B.hp > 0 || B.state === 'dying' || B.state === 'carve')) {
+  // ---- boss banner — only for the named, and only once he has moved ----
+  const awk = B.awakeK === undefined ? 1 : clamp(B.awakeK, 0, 1);
+  if (BD().name && awk > 0.01 && (B.hp > 0 || B.state === 'dying' || B.state === 'carve')) {
+    ctx.save();
+    ctx.globalAlpha = awk;
     const bw = W * 0.62, bx = (W - bw) / 2, by = H - 44;
     ctx.textAlign = 'center';
     ctx.font = '600 18px Georgia, "Times New Roman", serif';
@@ -5078,6 +5160,7 @@ function drawHUD() {
       }
       ctx.restore();
     }
+    ctx.restore();
     ctx.textAlign = 'left';
   }
 }
