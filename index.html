@@ -3088,12 +3088,12 @@ function update(dt) {
       break;
     }
     case 'door':
-      // the screen blackens on the yard, and opens again on the fight
-      if (G.screenT >= 0.55) {
+      // the screen blackens on the yard, holds a breath, and opens again on the fight
+      if (G.screenT >= 1.4) {
         B.defId = 'aldric';
         resetFight();
-        G.enterFade = 1.15;
-        G.nameFade = G.firstFight ? 2.2 : 0;
+        G.enterFade = 2.0;
+        G.nameFade = G.firstFight ? 3.2 : 0;
         G.firstFight = false;
         goto('fight');
       }
@@ -3261,6 +3261,24 @@ function drawFloor() {
 function drawFogWall() {
   const t = G.time;
   ctx.save();
+  // the room itself is kept dim — the braziers only do so much
+  ctx.fillStyle = 'rgba(4,5,8,0.72)';
+  roundRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h, 10);
+  ctx.fill();
+  /* and past the fog line there is no room at all — only the void. Built as
+     one compound path (roundRect resets the path, so it can't be reused here);
+     the fill starts at the arena's top edge so the far wall keeps its face. */
+  ctx.fillStyle = 'rgba(2,3,6,0.9)';
+  ctx.beginPath();
+  ctx.rect(-160, ARENA.y, W + 320, H - ARENA.y + 220);
+  ctx.moveTo(ARENA.x + 10, ARENA.y);
+  ctx.arcTo(ARENA.x + ARENA.w, ARENA.y, ARENA.x + ARENA.w, ARENA.y + ARENA.h, 10);
+  ctx.arcTo(ARENA.x + ARENA.w, ARENA.y + ARENA.h, ARENA.x, ARENA.y + ARENA.h, 10);
+  ctx.arcTo(ARENA.x, ARENA.y + ARENA.h, ARENA.x, ARENA.y, 10);
+  ctx.arcTo(ARENA.x, ARENA.y, ARENA.x + ARENA.w, ARENA.y, 10);
+  ctx.closePath();
+  ctx.fill('evenodd');
+  // the barrier itself stands over both — the line, and the mist that walks it
   ctx.lineWidth = 2;
   ctx.strokeStyle = 'rgba(130,148,190,0.13)';
   roundRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h, 10);
@@ -3282,11 +3300,6 @@ function drawFogWall() {
     ctx.restore();
   }
   ctx.globalAlpha = 1;
-  ctx.fillStyle = 'rgba(4,5,8,0.72)';
-  ctx.beginPath();
-  ctx.rect(0, 0, W, H);
-  roundRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h, 10);
-  ctx.fill('evenodd');
   ctx.restore();
 }
 
@@ -4438,10 +4451,10 @@ function drawBoss() {
   }
 
   if (B.phase2) {
-    // ---- out of the armor: a much smaller man, the crown still nailed on ----
+    // ---- out of the armor: leaner, not lesser — he still stands over you ----
     ctx.save();
     ctx.translate(breathe * 0.3, 10);
-    ctx.scale(flipB, 1);
+    ctx.scale(flipB * 1.55, 1.55);
     ctx.rotate(0.05);
     const kleg = (x, near) => {
       ctx.strokeStyle = F(near ? '#3d3345' : '#2a2334'); ctx.lineWidth = 3.8;
@@ -4696,7 +4709,7 @@ function drawBoss() {
 
   // ---- the sceptre-maul: full size always (the shard never shrinks) ----
   ctx.save();
-  ctx.translate(flipB * 9 * shr, B.phase2 ? -20 : -26);   // gripped at the hand, out from the body
+  ctx.translate(flipB * (B.phase2 ? 10 : 9 * shr), B.phase2 ? -21 : -26);   // pinned to the drawn hand of each form
   ctx.rotate(B.face + B.wOff);
   const L = B.wLen;
   if (!B.broken) {
@@ -4755,6 +4768,10 @@ function drawBoss() {
       ctx.globalAlpha = alpha;
     }
   }
+  // the hand closed around the haft — it rides the swing, so the grip never breaks
+  ctx.fillStyle = F(B.phase2 ? '#a08f92' : '#54465e');
+  ctx.strokeStyle = F('#0b0810'); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(10, 0, B.phase2 ? 3.8 : 4.8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   ctx.restore();
   ctx.restore();
 
@@ -5469,7 +5486,7 @@ function render() {
       break;
     case 'door': {
       drawWorld();
-      ctx.fillStyle = `rgba(0,0,0,${clamp(G.screenT / 0.45, 0, 1)})`;
+      ctx.fillStyle = `rgba(0,0,0,${clamp(G.screenT / 0.9, 0, 1)})`;
       ctx.fillRect(0, 0, W, H);
       break;
     }
@@ -5486,11 +5503,11 @@ function render() {
     case 'victory': drawVictory(); break;
   }
   if (G.screen === 'fight' && (G.enterFade || 0) > 0) {
-    ctx.fillStyle = `rgba(0,0,0,${clamp(G.enterFade / 1.15, 0, 1) * 0.96})`;
+    ctx.fillStyle = `rgba(0,0,0,${clamp(G.enterFade / 2.0, 0, 1) * 0.96})`;
     ctx.fillRect(0, 0, W, H);
   }
   if (G.screen === 'fight' && (G.nameFade || 0) > 0) {
-    const a = clamp(G.nameFade / 2.2, 0, 1) * clamp((2.2 - G.nameFade) / 0.4, 0, 1);
+    const a = clamp(G.nameFade / 3.2, 0, 1) * clamp((3.2 - G.nameFade) / 0.5, 0, 1);
     ctx.save();
     ctx.textAlign = 'center';
     ctx.globalAlpha = a;
