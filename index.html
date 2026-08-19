@@ -791,11 +791,124 @@ const WALL_BAKE = (() => {
     c.beginPath(); c.moveTo(ox, oy); c.lineTo(gx + (ox - gx) * 1.18, oy - 12); c.stroke();
   }
 
+  // ---- two banners, hung long before this became a graveyard ----
+  const banner = (bx) => {
+    const bw = 42, top = 4, bot = WALL_H - 22;
+    c.save();
+    const bg2 = c.createLinearGradient(bx, top, bx, bot);
+    bg2.addColorStop(0, '#3a1620'); bg2.addColorStop(0.7, '#2c1018'); bg2.addColorStop(1, '#200a10');
+    c.fillStyle = bg2;
+    c.beginPath();
+    c.moveTo(bx - bw / 2, top); c.lineTo(bx + bw / 2, top);
+    c.lineTo(bx + bw / 2 - 2, bot - 14);
+    c.lineTo(bx + bw / 4, bot - 24);          // the hem hangs in torn points
+    c.lineTo(bx + 2, bot);
+    c.lineTo(bx - bw / 4 + 2, bot - 18);
+    c.lineTo(bx - bw / 2 + 3, bot - 8);
+    c.closePath(); c.fill();
+    c.strokeStyle = 'rgba(0,0,0,0.6)'; c.lineWidth = 1.5; c.stroke();
+    // the rod, and the king's mark in tarnished gold
+    c.strokeStyle = '#3d3345'; c.lineWidth = 4;
+    c.beginPath(); c.moveTo(bx - bw / 2 - 6, top + 2); c.lineTo(bx + bw / 2 + 6, top + 2); c.stroke();
+    c.strokeStyle = 'rgba(201,163,74,0.5)'; c.lineWidth = 1.6;
+    c.beginPath(); c.moveTo(bx, top + 22); c.lineTo(bx - 8, top + 40); c.lineTo(bx + 8, top + 40); c.closePath(); c.stroke();
+    // a long tear
+    c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(bx + 6, top + 12); c.lineTo(bx + 10, bot - 34); c.stroke();
+    c.restore();
+  };
+  banner(GATE.x - 176); banner(GATE.x + 176);
+
+  // ---- chains, for whatever used to be kept here ----
+  const chain = (cx2, len, drift) => {
+    c.save();
+    c.strokeStyle = 'rgba(58,62,74,0.75)'; c.lineWidth = 2;
+    for (let i = 0; i < len; i++) {
+      const cy2 = 6 + i * 11, ox = Math.sin(i * 0.9) * drift;
+      c.beginPath(); c.ellipse(cx2 + ox, cy2, 3.2, 5.2, 0, 0, Math.PI * 2); c.stroke();
+    }
+    c.restore();
+  };
+  chain(GATE.x - 292, 9, 2.5); chain(GATE.x + 308, 12, 3); chain(96, 7, 2);
+
+  // ---- the dead script and the tallies, carved into the courses ----
+  for (let i = 0; i < 26; i++) {
+    const leftSide = i % 2 === 0;
+    const t2 = rr();
+    const gx2 = leftSide ? lerp(70, GATE.x - 140, t2) : lerp(W - 70, GATE.x + 140, t2);
+    const gy2 = WALL_H - 30 - rr() * 34;
+    strokeGlyph(c, makeGlyph(rr, 9, 0.3 + t2 * 0.9), gx2, gy2, 0.1 + rr() * 0.06);
+  }
+  for (let i = 0; i < 18; i++) {
+    const leftSide = i % 2 === 0;
+    const t2 = rr();
+    const cx2 = leftSide ? lerp(120, GATE.x - 120, t2) : lerp(W - 120, GATE.x + 120, t2);
+    const cy2 = WALL_H - 58 - rr() * 20;
+    c.save(); c.translate(cx2, cy2); c.rotate((rr() - 0.5) * t2 * 0.9);
+    c.strokeStyle = `rgba(172,166,152,${0.07 + rr() * 0.05})`; c.lineWidth = 1;
+    for (let k = 0; k < 4; k++) { c.beginPath(); c.moveTo(k * 3.2, -3.5); c.lineTo(k * 3.2 + (rr() - 0.5) * t2 * 4, 3.5); c.stroke(); }
+    c.beginPath(); c.moveTo(-2, 2.5); c.lineTo(12, -2.5); c.stroke();
+    c.restore();
+  }
+
+  // ---- sconce brackets; their fire is drawn alive, per frame ----
+  for (const sx of [GATE.x - 330, GATE.x + 330]) {
+    c.fillStyle = '#262a33';
+    c.beginPath(); c.moveTo(sx - 7, WALL_H - 40); c.lineTo(sx + 7, WALL_H - 40); c.lineTo(sx + 3, WALL_H - 30); c.lineTo(sx - 3, WALL_H - 30); c.closePath(); c.fill();
+    c.strokeStyle = 'rgba(0,0,0,0.6)'; c.lineWidth = 1; c.stroke();
+    c.fillRect(sx - 1.5, WALL_H - 30, 3, 10);
+  }
+
   // the wall meets the floor in a hard dark line
   c.fillStyle = 'rgba(0,0,0,0.55)';
   c.fillRect(0, WALL_H - 7, W, 7);
   return s;
 })();
+const SCONCES = [GATE.x - 330, GATE.x + 330];
+
+/* ---- standing pillars: two holding the vault at the back, two broken in the
+   foreground. Upright columns, drawn in the same counter-squashed space the
+   fighters use, so they stand with them. ---- */
+const PILLARS_TOP = [[ARENA.x + 128, ARENA.y + 52], [ARENA.x + ARENA.w - 128, ARENA.y + 52]];
+const PILLARS_BOT = [[ARENA.x + 208, ARENA.y + ARENA.h - 10], [ARENA.x + ARENA.w - 228, ARENA.y + ARENA.h - 10]];
+function drawPillar(x, y, h, broken) {
+  ctx.save();
+  ctx.translate(x, y);
+  // base shadow in the floor's own space
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath(); ctx.ellipse(0, 4, 20, 7, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.scale(1, 1 / SQUASH);
+  const w2 = 13;
+  const g = ctx.createLinearGradient(-w2, 0, w2, 0);
+  g.addColorStop(0, '#131722'); g.addColorStop(0.45, '#323848'); g.addColorStop(1, '#0e1119');
+  ctx.fillStyle = g;
+  if (broken) {
+    ctx.beginPath();
+    ctx.moveTo(-w2, 2); ctx.lineTo(-w2 + 1, -h + 14);
+    ctx.lineTo(-4, -h);                       // the top gave way long ago
+    ctx.lineTo(3, -h + 18); ctx.lineTo(w2 - 2, -h + 8); ctx.lineTo(w2, 2);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)'; ctx.lineWidth = 1.4; ctx.stroke();
+  } else {
+    ctx.fillRect(-w2, -h, w2 * 2, h + 2);
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)'; ctx.lineWidth = 1.4;
+    ctx.strokeRect(-w2, -h, w2 * 2, h + 2);
+    ctx.fillStyle = '#1c202a';                // the capital, still carrying its load
+    ctx.fillRect(-w2 - 4, -h - 8, w2 * 2 + 8, 9);
+    ctx.strokeRect(-w2 - 4, -h - 8, w2 * 2 + 8, 9);
+  }
+  // the plinth, and a breath of ember light up one flank
+  ctx.fillStyle = '#171a22';
+  ctx.fillRect(-w2 - 3, -4, w2 * 2 + 6, 7);
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1; ctx.strokeRect(-w2 - 3, -4, w2 * 2 + 6, 7);
+  ctx.strokeStyle = 'rgba(255,158,44,0.14)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x < W / 2 ? -w2 + 1 : w2 - 1, 0); ctx.lineTo(x < W / 2 ? -w2 + 1 : w2 - 1, -h + 12); ctx.stroke();
+  // old cracks
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(-w2 + 4, -h * 0.35); ctx.lineTo(2, -h * 0.42); ctx.lineTo(-1, -h * 0.55); ctx.stroke();
+  ctx.restore();
+}
 
 const BRAZIERS = [
   [ARENA.x + 34, ARENA.y + 34], [ARENA.x + ARENA.w - 34, ARENA.y + 34],
@@ -1045,6 +1158,7 @@ const G = {
   paused: false,
   padLost: 0,           // a controller vanished mid-fight; hold until it returns
   charIdx: 0,           // who is standing at the gate
+  enterFade: 0, nameFade: 0,   // the dark of the doorway, and the name spoken over it
   carve: null,          // the ending: glyphs carved into the practice ring
   victoryChimed: false
 };
@@ -1108,6 +1222,7 @@ const CHARS = [
   }
 ];
 function CH() { return CHARS[G.charIdx] || CHARS[0]; }
+function inCombat() { return G.screen === 'fight' || G.screen === 'yard'; }
 const SP_MAX = 30;     // seconds for the answering blow to come back
 
 /* =========================================================================
@@ -1377,7 +1492,7 @@ function camKick(ang, amt) {
 }
 function updateCamera(dt) {
   let tx = W / 2, ty = H / 2, tz = 1.04;
-  if (G.screen === 'fight' || G.screen === 'refade' || G.screen === 'dead' || G.screen === 'victory') {
+  if (inCombat() || G.screen === 'refade' || G.screen === 'dead' || G.screen === 'victory') {
     // drift toward the midpoint of the duel, clamped to the overscan slack
     /* the floor is tipped, so a body at world y shows up at projY(y) — the
        camera has to chase the projection or it frames everyone's feet */
@@ -1509,7 +1624,7 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
       const cost = (14 + dmg * 0.45) * (B.broken ? 1.5 : 1);
       if (P.st >= cost) {                    // the guard holds — chip damage + stamina
         P.st -= cost; P.stDelay = 0.7;
-        P.hp -= Math.max(1, Math.round(dmg * 0.22));
+        P.hp -= dmg === 0 ? 0 : Math.max(1, Math.round(dmg * 0.22));
         P.hurtInv = Math.max(P.hurtInv, 0.2);
         const ba = Math.atan2(P.y - srcY, P.x - srcX);
         P.kbX = Math.cos(ba) * 130; P.kbY = Math.sin(ba) * 130;
@@ -1517,7 +1632,8 @@ function damagePlayer(dmg, srcX, srcY, parryable, kbMult) {
         G.hitstop = Math.max(G.hitstop, 0.035);
         G.shake = Math.max(G.shake, 4);
         sfx.block();
-        if (HABITS.data) HABITS.data.block++;
+        if (G.screen === 'yard') TUT.f.blocked = true;
+        if (HABITS.data && G.screen === 'fight') HABITS.data.block++;
         P.resolve = Math.min(10, P.resolve + 0.5);   // the guard held — that too is form
         P.blockStun = 0.2;                   // shoved back onto your heels for a beat
         rumble(90, 0.3, 0.5);
@@ -1576,8 +1692,9 @@ function killPlayer() {
 }
 
 function damageBoss(dmg, noBleed) {
-  if (B.state === 'dying' || B.state === 'carve' || G.screen !== 'fight') return;
-  dmg = Math.round(dmg * (1 + 0.01 * B.defBreak));   // sundered armor keeps none of it out
+  if (B.state === 'dying' || B.state === 'carve' || !inCombat()) return;
+  if (G.screen === 'yard') TUT.onHit();
+  dmg = Math.round(dmg * (1 + 0.02 * B.defBreak));   // sundered armor keeps none of it out
   const lethal = B.hp - dmg <= 0;
   B.hp -= dmg;
   B.flash = 0.1;
@@ -1630,6 +1747,7 @@ function spendStamina(cost) { P.st = Math.max(-25, P.st - cost); P.stDelay = 0.7
 
 /* A perfect parry: his swing is turned, and for a moment he is the one exposed. */
 function onParrySuccess() {
+  if (G.screen === 'yard') TUT.f.parried = true;
   sfx.parry();
   G.hitstop = Math.max(G.hitstop, 0.09);
   G.shake = Math.max(G.shake, 6);
@@ -1661,6 +1779,40 @@ const CLASH_SET2 = { rising: 1, step: 1 };   // the quick shard work just trades
    scripted moments that are his alone. Adding another means writing a new
    entry here — the driver in updateBoss() never learns his name.
    ========================================================================= */
+/* the practice effigy's one swing — a slow, harmless, padded swat.
+   It telegraphs forever, deals nothing, and can be blocked or parried. */
+const ATKD = {
+  swat: { phases: [
+    { d: 1.3, k: 'w', track: 1.6, w: [0.6, -1.6], L: [40, 46] },
+    { d: 0.22, k: 'a', w: [-1.6, 1.2], L: [46, 46], hit: { s: 'arc', r0: 14, r1: 88, half: 1.1 }, dmg: 0, kb: 0.4 },
+    { d: 0.9, k: 'r', w: [1.2, 0.6], L: [46, 40] }
+  ] }
+};
+function effigyIdle(dt, angToP, d) {
+  // straw does not fight; it shambles a little, and it mends itself
+  B.tele = Math.max(0, B.tele - 4 * dt);
+  if (B.hp < B.hpMax) B.hp = Math.min(B.hpMax, B.hp + 90 * dt);
+  B.bleed = Math.min(B.bleed, B.hpMax * 0.08);
+  B.wanderT = (B.wanderT || 0) - dt;
+  if (B.wanderT <= 0) {
+    B.wanderT = rand(1.6, 3.2);
+    B.wandA = rand(0, Math.PI * 2);
+  }
+  B.face = turnToward(B.face, angToP, 1.8 * dt);
+  const wx = Math.cos(B.wandA), wy = Math.sin(B.wandA);
+  const nx = B.x + wx * 40 * dt, ny = B.y + wy * 40 * dt;
+  // it keeps to the middle of the room
+  if (Math.abs(nx - W / 2) < 190 && Math.abs(ny - HORIZON) < 110) { B.x = nx; B.y = ny; }
+  else B.wandA += Math.PI;
+  B.swatT = (B.swatT || 0) - dt;
+  B.cd -= dt;
+  if (B.cd <= 0 && B.swatT <= 0 && d < 135) {
+    B.swatT = 3.0;
+    B.chainCount = 1;
+    bossStartAttack('swat');
+  }
+}
+
 const BOSSES = {
   aldric: {
     id: 'aldric', name: 'ALDRIC',
@@ -1680,6 +1832,20 @@ const BOSSES = {
     onDeath: startCarve
   }
 };
+BOSSES.effigy = {
+  id: 'effigy', name: '',              // no name, no bar — it is furniture that moves
+  hpMax: 4000, poiseMax: 6,
+  entry: { x: W / 2 + 70, face: Math.PI },
+  phases: [
+    { id: 'straw', set: ATKD, r: 20, height: 40, wLen: 40, clash: {}, choose: () => 'swat', idle: effigyIdle },
+    { id: 'straw2', set: ATKD, r: 20, height: 40, wLen: 40, clash: {}, choose: () => 'swat', idle: effigyIdle }
+  ],
+  states: {},
+  transition: null,
+  draw: drawEffigy,
+  onDeath: () => { B.hp = B.hpMax; }   // straw does not die; it is re-stuffed by morning
+};
+
 function BD() { return BOSSES[B.defId] || BOSSES.aldric; }
 function BPH() { return BD().phases[B.phase2 ? 1 : 0]; }
 /* Everything the world draws sits on the flattened floor, but the two of them
@@ -1798,11 +1964,12 @@ function breakPoise() {
    cut — and the debt is paid out as damage over time whether the cutting
    continues or not. The ritual takes a minute to be willing to work again. */
 function startRitual() {
-  if (CH().id !== 'pair' || G.screen !== 'fight' || P.dead || G.cinematic) return;
+  if (CH().id !== 'pair' || !inCombat() || P.dead || G.cinematic) return;
   if (P.ritualCd > 0) { sfx.flaskEmpty(); return; }   // the blood is not ready
   P.hp = Math.max(1, P.hp - Math.max(1, P.hpMax * 0.01));   // it cannot kill him, only cost him
   P.coatT = 30;
   P.ritualCd = 60;
+  if (G.screen === 'yard') TUT.f.rite = true;
   P.flash = 0.08;
   sfx.rupture();
   rumble(180, 0.4, 0.6);
@@ -1811,7 +1978,8 @@ function startRitual() {
 }
 function addBleed() {
   if (!CH().bleed || P.coatT <= 0) return;
-  if (B.state === 'carve' || B.hp <= 0 || G.screen !== 'fight') return;
+  if (B.state === 'carve' || B.hp <= 0 || !inCombat()) return;
+  if (G.screen === 'yard') TUT.f.coatHits = (TUT.f.coatHits || 0) + 1;
   B.bleed += B.hpMax * 0.0025;             // twenty coated hits = 5% of his life, owed
 }
 
@@ -1862,7 +2030,7 @@ function updatePlayer(dt) {
   if (mag > 0.01) { P.moveDirX = mvX / (Math.hypot(mvX, mvY) || 1); P.moveDirY = mvY / (Math.hypot(mvX, mvY) || 1); }
 
   // lock-on toggle
-  if (Input.lock && G.screen === 'fight') {
+  if (Input.lock && inCombat()) {
     if (B.state !== 'dying' && B.state !== 'carve') P.locked = !P.locked;
   }
   if (B.state === 'dying' || B.state === 'carve') P.locked = false;
@@ -1872,7 +2040,7 @@ function updatePlayer(dt) {
   else if (mag > 0.01 && (!P.act || P.act.type === 'flask')) P.face = Math.atan2(mvY, mvX);
 
   // guard is a held stance, and only the one who was given a real sword has one
-  P.blocking = Input.blockHeld && CH().canBlock && !P.act && G.screen === 'fight';
+  P.blocking = Input.blockHeld && CH().canBlock && !P.act && inCombat();
   // the same hand that raises the knight's guard opens the scavenger's palm
   if (Input.blockPressed && CH().id === 'pair') startRitual();
   P.ritualCd = Math.max(0, P.ritualCd - dt);
@@ -1900,7 +2068,7 @@ function updatePlayer(dt) {
     if (past) canAct = true;                 // the cut has already landed; the rest is just recovery
   }
 
-  if (canAct && G.screen === 'fight') {
+  if (canAct && inCombat()) {
     const want = Input.peekBuffer();
     if (want === 'roll' && P.st > 0) {
       Input.consumeBuffer();
@@ -1912,7 +2080,8 @@ function updatePlayer(dt) {
       } else { dx = mvX / (Math.hypot(mvX, mvY) || 1); dy = mvY / (Math.hypot(mvX, mvY) || 1); }
       /* he watches which way you leave, and out of what */
       const wasCancel = P.act && (P.act.type === 'light' || P.act.type === 'heavy');
-      if (HABITS.data) {
+      if (wasCancel && C.dashCancel && G.screen === 'yard') TUT.f.dc = true;
+      if (HABITS.data && G.screen === 'fight') {
         const dd = dist(P.x, P.y, B.x, B.y) || 1;
         const ux = (B.x - P.x) / dd, uy = (B.y - P.y) / dd;
         const dot = dx * ux + dy * uy, cross = ux * dy - uy * dx;
@@ -1947,6 +2116,7 @@ function updatePlayer(dt) {
       Input.consumeBuffer();
       P.spGauge = 0;
       P.face = Math.atan2(B.y - P.y, B.x - P.x);
+      if (G.screen === 'yard') TUT.f.special = true;
       P.act = { type: 'special', t: 0, dur: C.id === 'pair' ? 0.72 : 0.66, face: P.face, stabs: 0 };
       G.lastAggro = G.time;
     } else if ((want === 'light' || want === 'heavy') && (!P.act) && P.st > 0) {
@@ -1963,7 +2133,7 @@ function updatePlayer(dt) {
         P.chainT = 0.6;
       }
       const spec = str[heavy ? P.hchain : P.chain];
-      if (HABITS.data && (B.state === 'stagger' || B.state === 'daze')) HABITS.data.punish++;
+      if (HABITS.data && G.screen === 'fight' && (B.state === 'stagger' || B.state === 'daze')) HABITS.data.punish++;
       spendStamina(spec.stam);
       if (P.locked) P.face = Math.atan2(B.y - P.y, B.x - P.x);
       P.swingAlt = !P.swingAlt;
@@ -1978,10 +2148,11 @@ function updatePlayer(dt) {
     }
   }
   // flask (not buffered; explicit press)
-  if (Input.flask && !P.act && G.screen === 'fight') {
+  if (Input.flask && !P.act && inCombat()) {
     if (P.flasks > 0) {
       P.flasks -= 1;
-      if (HABITS.data) { HABITS.data.flask.push(P.hp / P.hpMax); if (HABITS.data.flask.length > 10) HABITS.data.flask.shift(); }
+      if (G.screen === 'yard') TUT.f.flask = true;
+      if (HABITS.data && G.screen === 'fight') { HABITS.data.flask.push(P.hp / P.hpMax); if (HABITS.data.flask.length > 10) HABITS.data.flask.shift(); }
       P.act = { type: 'flask', t: 0, dur: 1.0 };
       sfx.gulp();
     } else sfx.flaskEmpty();
@@ -2051,7 +2222,7 @@ function updatePlayer(dt) {
           if (!Input.heavyHeld) a.charging = false;
           else {
             a.chargeT = Math.min(C.chargeMax, a.chargeT + dt);
-            if (!a.chargeObs && a.chargeT > 0.3 && HABITS.data) {
+            if (!a.chargeObs && a.chargeT > 0.3 && HABITS.data && G.screen === 'fight') {
               a.chargeObs = true;
               const bAtk = B.state === 'attack' && B.atk && (B.setRef || currentSet())[B.atk];
               const inRec = (bAtk && bAtk.phases[B.phaseIdx] && bAtk.phases[B.phaseIdx].k === 'r')
@@ -2112,7 +2283,8 @@ function updatePlayer(dt) {
               G.shake = Math.max(G.shake, 6);
             }
             if (heavy && full && spec.charge) {
-              if (a.chargeToll) {          // held to the toll: the armor itself gives, 1% forever
+              if (a.chargeToll) {          // held to the toll: the armor itself gives, 2% forever
+                if (G.screen === 'yard') TUT.f.sunder = true;
                 B.defBreak += 1;
                 sfx.crack();
                 G.dmgNums.push({ x: B.x, y: bossHeadY() - 6, v: 'SUNDERED', t: 0 });
@@ -2889,9 +3061,8 @@ function update(dt) {
       if (Input.menuL && G.charIdx > 0) { G.charIdx--; sfx.chime(); }
       if (Input.menuR && G.charIdx < CHARS.length - 1) { G.charIdx++; sfx.chime(); }
       if (Input.confirm) {
-        resetFight();
-        sfx.fog();
-        goto(G.firstFight ? 'intro' : 'refade');
+        sfx.chime();
+        startYard();
       }
       break;
     case 'intro': {
@@ -2905,7 +3076,31 @@ function update(dt) {
     case 'refade':
       if (G.screenT >= 0.45) goto('fight');
       break;
+    case 'yard': {
+      updatePlayer(dt);
+      updateBoss(dt);
+      TUT.update(dt);
+      // the door: walk into the gate's mouth and the dark takes you
+      if (!P.dead && P.y < ARENA.y + 30 && Math.abs(P.x - GATE.x) < 74) {
+        sfx.fog();
+        goto('door');
+      }
+      break;
+    }
+    case 'door':
+      // the screen blackens on the yard, and opens again on the fight
+      if (G.screenT >= 0.55) {
+        B.defId = 'aldric';
+        resetFight();
+        G.enterFade = 1.15;
+        G.nameFade = G.firstFight ? 2.2 : 0;
+        G.firstFight = false;
+        goto('fight');
+      }
+      break;
     case 'fight':
+      G.enterFade = Math.max(0, (G.enterFade || 0) - dt);
+      G.nameFade = Math.max(0, (G.nameFade || 0) - dt);
       updatePlayer(dt);
       updateBoss(dt);
       updateFissures(dt);
@@ -4012,6 +4207,159 @@ function drawPlayerDeath() {
   ctx.restore();
 }
 
+/* the practice effigy: a sack of straw on a cross-pole, with one padded arm */
+function drawEffigy() {
+  const white = B.flash > 0;
+  const F = (c2) => white ? '#ffffff' : c2;
+  ctx.save();
+  ctx.translate(B.x, B.y);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.ellipse(0, 7, 16, 6, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.scale(1, 1 / SQUASH);
+  if (B.state === 'stagger' || B.state === 'daze') ctx.rotate(0.1 * Math.sin(G.time * 4));
+
+  // the padded arm swings on the crossbar, driven by the same wOff every boss uses
+  ctx.save();
+  ctx.translate(0, -30);
+  ctx.rotate(B.face + B.wOff);
+  ctx.strokeStyle = F('#4a3b2c'); ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(6 + B.wLen * 0.8, 0); ctx.stroke();
+  ctx.fillStyle = F('#6a5a42');
+  ctx.beginPath(); ctx.ellipse(6 + B.wLen * 0.8, 0, 8, 6, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = F('#2c2418'); ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.restore();
+
+  // the pole and its brace
+  ctx.strokeStyle = F('#3b2f22'); ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(0, 2); ctx.lineTo(0, -44); ctx.stroke();
+  ctx.strokeStyle = F('#2c2418'); ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(-14, -30); ctx.lineTo(14, -30); ctx.stroke();
+
+  // the body: burlap, stitched, leaking straw where it has been opened
+  const bg = ctx.createLinearGradient(0, -34, 0, -8);
+  bg.addColorStop(0, '#8a7a5c'); bg.addColorStop(1, '#6d5f46');
+  ctx.fillStyle = F(bg);
+  ctx.beginPath(); ctx.ellipse(0, -20, 11, 13, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = F('#3b2f22'); ctx.lineWidth = 1.4; ctx.stroke();
+  if (!white) {
+    ctx.strokeStyle = 'rgba(59,47,34,0.7)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(-7, -24); ctx.lineTo(7, -18); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-6, -14); ctx.lineTo(6, -12); ctx.stroke();
+    ctx.strokeStyle = '#c9b678'; ctx.lineWidth = 1.2;      // straw, escaping
+    for (const [sx2, sy2, a2] of [[-9, -12, 2.6], [9, -16, 0.5], [3, -8, 1.9]]) {
+      ctx.beginPath(); ctx.moveTo(sx2, sy2); ctx.lineTo(sx2 + Math.cos(a2) * 5, sy2 + Math.sin(a2) * 5); ctx.stroke();
+    }
+  }
+  // the head: a smaller sack with a stitched cross for a face
+  ctx.fillStyle = F('#8a7a5c');
+  ctx.beginPath(); ctx.ellipse(0, -38, 7, 6.4, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = F('#3b2f22'); ctx.lineWidth = 1.3; ctx.stroke();
+  if (!white) {
+    ctx.strokeStyle = '#3b2f22'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(-2.6, -40); ctx.lineTo(0.6, -36.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0.6, -40); ctx.lineTo(-2.6, -36.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(2.2, -38.6); ctx.lineTo(4.6, -38.2); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* =========================================================================
+   THE YARD — an antechamber with an effigy in it, and the gate standing
+   open at the far end. Every lesson is optional: the door never locks.
+   ========================================================================= */
+const TUT = {
+  f: {}, step: 0, steps: [],
+  onHit() {
+    const a = P.act;
+    if (!a) return;
+    if (a.type === 'light') TUT.f.lights = (TUT.f.lights || 0) + 1;
+    if (a.type === 'heavy') TUT.f.heavies = (TUT.f.heavies || 0) + 1;
+  },
+  start() {
+    this.f = { moveT: 0, sprintT: 0, rolls: 0 };
+    this.step = 0;
+    const blade = CH().id === 'blade';
+    const f = this.f;
+    const common = [
+      { p: 'Move with the left stick.', k: 'Move with W A S D.', done: () => f.moveT > 1.4 },
+      { p: 'Hold B while moving to sprint.', k: 'Hold Space while moving to sprint.', done: () => f.sprintT > 0.6 },
+      { p: 'Tap B to roll. The start of a roll cannot be touched.', k: 'Tap Space to roll. The start of a roll cannot be touched.', done: () => f.rolls > 0 },
+      { p: 'Click R3 to lock on to the effigy.', k: 'Press Q to lock on to the effigy.', done: () => P.locked },
+      { p: 'RB: light attacks. They chain — land three on the effigy.', k: 'Left Mouse: light attacks. They chain — land three on the effigy.', done: () => (f.lights || 0) >= 3 },
+      { p: 'RT: a heavy attack. Land one.', k: 'Right Mouse: a heavy attack. Land one.', done: () => (f.heavies || 0) >= 1 }
+    ];
+    const bladeSteps = [
+      { p: 'HOLD RT until the blade tolls, then release. A full charge SUNDERS: he takes 2% more from you, forever, each time.', k: 'HOLD Right Mouse until the blade tolls, then release. A full charge SUNDERS: 2% more damage taken, forever, each time.', done: () => f.sunder },
+      { p: 'Hold L1 and take its swing on your guard. Blocking spends stamina — an empty guard breaks.', k: 'Hold Shift and take its swing on your guard. Blocking spends stamina — an empty guard breaks.', done: () => f.blocked },
+      { p: 'Press L2 as its swing lands: a parry.', k: 'Press F as its swing lands: a parry.', done: () => f.parried },
+      { p: 'While it reels and the gold seam is full, strike: THE ANSWERING BLOW. The seam refills over thirty seconds.', k: 'While it reels and the gold seam is full, strike: THE ANSWERING BLOW. The seam refills over thirty seconds.', done: () => f.special },
+      { p: 'Press X to drink. Three draughts; the gate grants no more.', k: 'Press E to drink. Three draughts; the gate grants no more.', done: () => f.flask },
+      { p: 'The pale seam under your stamina is RESOLVE: landed hits and held blocks sharpen you; one wound breaks it.', k: 'The pale seam under your stamina is RESOLVE: landed hits and held blocks sharpen you; one wound breaks it.', done: () => (f.barT = (f.barT || 0) + 1) > 300 }
+    ];
+    const pairSteps = [
+      { p: 'Roll DURING an attack: the pair alone may cancel a swing into a dash.', k: 'Roll DURING an attack: the pair alone may cancel a swing into a dash.', done: () => f.dc },
+      { p: 'Press L1: THE BLOOD RITE. You pay 1% of yourself; the knives run red for thirty seconds. Once a minute.', k: 'Press Shift: THE BLOOD RITE. You pay 1% of yourself; the knives run red for thirty seconds. Once a minute.', done: () => f.rite },
+      { p: 'Land five coated cuts. Each banks a debt of his blood, paid out over time.', k: 'Land five coated cuts. Each banks a debt of his blood, paid out over time.', done: () => (f.coatHits || 0) >= 5 },
+      { p: 'Press L2 as its swing lands: a parry. You carry no shield — this is your only refusal.', k: 'Press F as its swing lands: a parry. You carry no shield — this is your only refusal.', done: () => f.parried },
+      { p: 'While it reels and the gold seam is full, strike: THE ANSWERING BLOW. The seam refills over thirty seconds.', k: 'While it reels and the gold seam is full, strike: THE ANSWERING BLOW. The seam refills over thirty seconds.', done: () => f.special },
+      { p: 'Press X to drink. Three draughts; the gate grants no more.', k: 'Press E to drink. Three draughts; the gate grants no more.', done: () => f.flask },
+      { p: 'The eight teeth beside the red seam are FRENZY: cutting quickens you, stillness starves it. At full, you deal more — and take more.', k: 'The eight teeth beside the red seam are FRENZY: cutting quickens you, stillness starves it. At full, you deal more — and take more.', done: () => (f.barT = (f.barT || 0) + 1) > 300 }
+    ];
+    this.steps = common.concat(blade ? bladeSteps : pairSteps);
+    this.steps.push({ p: 'The gate stands open. Walk through it when you are ready.', k: 'The gate stands open. Walk through it when you are ready.', done: () => false });
+  },
+  update(dt) {
+    const f = this.f;
+    if (P.speedNow > 40) f.moveT += dt;
+    if (Input.sprint && P.speedNow > 200) f.sprintT += dt;
+    if (P.act && P.act.type === 'roll' && !f._rollLatch) { f._rollLatch = true; f.rolls++; }
+    if (!P.act || P.act.type !== 'roll') f._rollLatch = false;
+    const st = this.steps[this.step];
+    if (st && this.step < this.steps.length - 1 && st.done()) {
+      this.step++;
+      f.barT = 0;
+      sfx.chime();
+    }
+  }
+};
+
+function startYard() {
+  B.defId = 'effigy';
+  resetFight();
+  P.x = W / 2 - 40; P.y = ARENA.y + ARENA.h - 90; P.face = -Math.PI / 2;
+  TUT.start();
+  goto('yard');
+}
+
+function drawTutorial() {
+  const pad = Input.device === 'pad';
+  const st = TUT.steps[TUT.step];
+  if (!st) return;
+  ctx.save();
+  ctx.textAlign = 'center';
+  // the lesson, in the low dark where the boss's name would be
+  ctx.font = 'italic 15px Georgia, serif';
+  ctx.fillStyle = 'rgba(10,10,14,0.75)';
+  const txt = pad ? st.p : st.k;
+  wrapText(txt, W / 2 + 1, H - 46 + 1, 640, 18);
+  ctx.fillStyle = '#d6cfc2';
+  wrapText(txt, W / 2, H - 46, 640, 18);
+  // how far along the lessons are
+  const n = TUT.steps.length;
+  for (let i = 0; i < n; i++) {
+    ctx.fillStyle = i < TUT.step ? 'rgba(201,163,74,0.8)' : (i === TUT.step ? 'rgba(214,207,194,0.9)' : 'rgba(120,116,106,0.35)');
+    ctx.fillRect(W / 2 - n * 5 + i * 10, H - 14, 5, 5);
+  }
+  // and the way out, always
+  const bl = 0.5 + 0.3 * Math.sin(G.time * 2.6);
+  ctx.globalAlpha = bl;
+  ctx.fillStyle = '#c9a34a';
+  ctx.font = '600 12px Georgia, serif';
+  ctx.fillText('the gate does not wait — walk through it whenever you will', W / 2, 26);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 function drawBoss() {
   const dying = B.state === 'dying';
   const carving = B.state === 'carve';
@@ -4062,13 +4410,29 @@ function drawBoss() {
   if (stag || dazed) ctx.rotate(0.16 * Math.sin(G.time * 3));
   if (B.state === 'hesitate' && B.stateT > 0.5 && B.stateT < 1.15) ctx.rotate(Math.sin(G.time * 40) * 0.012);
   if (carving && G.carve) {
+    /* He goes down the same way the player does — in beats, on his feet
+       first. The knees give, he catches himself hunched over one arm, and in
+       that fold he writes. When the writing stops, the rest of him follows. */
     const cv = G.carve;
-    let down = 1;
-    if (cv.phase === 'fall') down = clamp(cv.t / 1.5, 0, 1);
-    const e = down * down;
-    ctx.translate(e * 6, e * 9);
-    ctx.scale(1 - e * 0.06, 1 - e * 0.34);
-    if (cv.phase === 'dissolve') ctx.globalAlpha = alpha * clamp(1 - cv.t / 1.9, 0, 1);
+    let sink = 0, pitch = 0;
+    if (cv.phase === 'fall') {
+      if (cv.t < 0.7) { const e = 1 - Math.pow(1 - cv.t / 0.7, 2); sink = e * 16; pitch = e * 0.18; }
+      else { const k = clamp((cv.t - 0.7) / 0.8, 0, 1), e = k * k; sink = 16 + e * 7; pitch = 0.18 + e * 0.32; }
+    } else if (cv.phase === 'carving') {
+      sink = 23; pitch = 0.5 + Math.sin(cv.t * 7.2) * 0.016;       // the writing hand, working
+    } else if (cv.phase === 'drop') {
+      const e = clamp(cv.t / 0.8, 0, 1);
+      sink = 23 + e * 4; pitch = 0.5 + e * 0.12;                   // the shard leaves the hand; he sags
+    } else if (cv.phase === 'still') {
+      const e = Math.pow(clamp(cv.t / 1.6, 0, 1), 1.6);
+      sink = 27 + e * 7; pitch = 0.62 + e * 0.55;                  // and the rest of him follows
+    } else {                                                       // dissolve
+      sink = 34; pitch = 1.24;
+      ctx.globalAlpha = alpha * clamp(1 - cv.t / 1.9, 0, 1);
+    }
+    const fB = Math.cos(B.face) < 0 ? -1 : 1;
+    ctx.translate(fB * pitch * 9, sink);
+    ctx.rotate(fB * pitch);
   } else if (B.state === 'break' && B.breakStep >= 1 && B.breakStep < 3) {
     ctx.scale(1, 0.9); ctx.translate(0, 2);
   }
@@ -4648,8 +5012,8 @@ function drawHUD() {
     ctx.fillRect(0, 0, W, H);
   }
 
-  // ---- boss banner ----
-  if ((B.hp > 0 || B.state === 'dying' || B.state === 'carve')) {
+  // ---- boss banner — only for the named ----
+  if (BD().name && (B.hp > 0 || B.state === 'dying' || B.state === 'carve')) {
     const bw = W * 0.62, bx = (W - bw) / 2, by = H - 44;
     ctx.textAlign = 'center';
     ctx.font = '600 18px Georgia, "Times New Roman", serif';
@@ -4989,10 +5353,38 @@ function drawWorld() {
     ctx.restore();
   } else ctx.drawImage(WALL_BAKE, 0, 0);
 
+  // sconce fire, alive on the wall
+  for (const sx of SCONCES) {
+    const fl = 0.7 + 0.3 * Math.sin(G.time * 6.4 + sx);
+    ctx.globalAlpha = 0.2 * fl;
+    ctx.drawImage(GLOW_EMBER, sx - 60 * fl, WALL_H - 46 - 60 * fl, 120 * fl, 120 * fl);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = `rgba(255,${160 + Math.floor(50 * fl)},70,${0.8 * fl})`;
+    ctx.beginPath();
+    ctx.moveTo(sx, WALL_H - 52 - 6 * fl);
+    ctx.quadraticCurveTo(sx + 4.5, WALL_H - 44, sx, WALL_H - 42);
+    ctx.quadraticCurveTo(sx - 4.5, WALL_H - 44, sx, WALL_H - 52 - 6 * fl);
+    ctx.fill();
+  }
+  // the gate's light, falling out of the arch and down the wall
+  {
+    const gf = 0.75 + 0.25 * Math.sin(G.time * 2.3);
+    const bg3 = ctx.createLinearGradient(0, 30, 0, WALL_H + 60);
+    bg3.addColorStop(0, `rgba(255,158,44,${0.10 * gf})`);
+    bg3.addColorStop(1, 'rgba(255,158,44,0)');
+    ctx.fillStyle = bg3;
+    ctx.beginPath();
+    ctx.moveTo(GATE.x - 100, 34); ctx.lineTo(GATE.x + 100, 34);
+    ctx.lineTo(GATE.x + 150, WALL_H + 58); ctx.lineTo(GATE.x - 150, WALL_H + 58);
+    ctx.closePath(); ctx.fill();
+  }
+
   ctx.save();
   ctx.translate(0, HORIZON); ctx.scale(1, SQUASH); ctx.translate(0, -HORIZON);
 
   drawFloor();
+  drawPillar(PILLARS_TOP[0][0], PILLARS_TOP[0][1], 175, false);
+  drawPillar(PILLARS_TOP[1][0], PILLARS_TOP[1][1], 175, false);
   drawDebris();
   drawShedPlates();
   drawFissures();
@@ -5000,7 +5392,10 @@ function drawWorld() {
   drawSlashes();
   drawRings();
   // draw whichever is further "back" first, so overlap reads correctly
-  if (B.y <= P.y) { drawBoss(); drawPlayer(); } else { drawPlayer(); drawBoss(); }
+  const bossDraw = BD().draw || drawBoss;
+  if (B.y <= P.y) { bossDraw(); drawPlayer(); } else { drawPlayer(); bossDraw(); }
+  drawPillar(PILLARS_BOT[0][0], PILLARS_BOT[0][1], 96, true);
+  drawPillar(PILLARS_BOT[1][0], PILLARS_BOT[1][1], 82, true);
   drawParticles();
   drawDamageNumbers();
   drawFogWall();
@@ -5068,6 +5463,16 @@ function render() {
 
   switch (G.screen) {
     case 'title': drawTitle(); break;
+    case 'yard':
+      drawWorld();
+      drawTutorial();
+      break;
+    case 'door': {
+      drawWorld();
+      ctx.fillStyle = `rgba(0,0,0,${clamp(G.screenT / 0.45, 0, 1)})`;
+      ctx.fillRect(0, 0, W, H);
+      break;
+    }
     case 'intro': drawIntro(); break;
     case 'refade': {
       drawWorld();
@@ -5079,6 +5484,21 @@ function render() {
     case 'fight': drawWorld(); if (G.paused) drawPause(); break;
     case 'dead': drawDead(); break;
     case 'victory': drawVictory(); break;
+  }
+  if (G.screen === 'fight' && (G.enterFade || 0) > 0) {
+    ctx.fillStyle = `rgba(0,0,0,${clamp(G.enterFade / 1.15, 0, 1) * 0.96})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  if (G.screen === 'fight' && (G.nameFade || 0) > 0) {
+    const a = clamp(G.nameFade / 2.2, 0, 1) * clamp((2.2 - G.nameFade) / 0.4, 0, 1);
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#d6cfc2';
+    ctx.font = '600 34px Georgia, "Times New Roman", serif';
+    drawTracked(BD().name, W / 2, H / 2 - 12, 10);
+    ctx.restore();
+    ctx.textAlign = 'left';
   }
   drawAudioNotice();
 }
@@ -5146,11 +5566,11 @@ function frame(now) {
   Input.poll(rdt);
 
   // pause — only in the fight, and a lost controller pauses on your behalf
-  if (G.screen === 'fight' && Input.pause) {
+  if (inCombat() && Input.pause) {
     if (!(G.paused && G.padLost && !Input.pad)) G.paused = !G.paused;
   }
   if (G.padLost && Input.pad) G.padLost = 0;
-  if (G.screen !== 'fight') G.paused = false;
+  if (!inCombat()) G.paused = false;
   if (G.paused) { G.time += rdt; render(); return; }   // time advances so the overlay animates
   if (G.hitstop > 0) {           // hitstop: freeze the world, keep rendering
     G.hitstop -= rdt;
@@ -5172,7 +5592,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 /* test/debug hook (harmless in normal play) */
-window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, camKick, onParrySuccess, bossStartAttack, ATK1, ATK2, BOSSES, BD, BPH, CHARS, CH, SP_MAX, HABITS, SQUASH, HORIZON, projY, gaitSwing, startCarve };
+window.__game = { G, P, B, Input, sfx, AudioSys, resetFight, damagePlayer, damageBoss, breakPoise, addBleed, camKick, onParrySuccess, bossStartAttack, ATK1, ATK2, BOSSES, BD, BPH, CHARS, CH, SP_MAX, HABITS, SQUASH, HORIZON, projY, gaitSwing, TUT, startYard, startCarve };
 </script>
 </body>
 </html>
