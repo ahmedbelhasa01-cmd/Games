@@ -20,15 +20,15 @@
    ========================================================================= */
 
 const W = 960, H = 540;
-const ARENA = { x: 64, y: 64, w: W - 128, h: H - 128 };
+const ARENA = { x: 56, y: 56, w: W - 112, h: H - 112 };
 const GATE = { x: W / 2, y: 26 };     // the threshold, beyond the top wall
 const RING = { x: 336, y: 338 };      // the worn practice ring
 /* 2.5D: the floor is seen at an angle, so it compresses toward the back;
    the people standing on it do not. SQUASH is that compression, pivoting on
    the middle of the room so the freed space becomes wall above and near
    floor below. */
-const SQUASH = 0.64;
-const HORIZON = 64 + (540 - 128) / 2;      // the arena's own middle
+const SQUASH = 0.7;
+const HORIZON = ARENA.y + ARENA.h / 2;      // the arena's own middle
 function projY(wy) { return HORIZON + (wy - HORIZON) * SQUASH; }
 const ACCENT = '#ff9e2c';             // ember — reserved for boss telegraphs & fire
 const COOL = '#9fc7ff';               // Nomad's one cool accent
@@ -1670,7 +1670,7 @@ const BOSSES = {
     phases: [
       { id: 'maul',  set: ATK1, r: 34, height: 46, wLen: 86,
         clash: CLASH_SET1, choose: chooseAttack1, idle: aldricIdleMaul },
-      { id: 'shard', set: ATK2, r: 19, height: 30, wLen: 58,
+      { id: 'shard', set: ATK2, r: 26, height: 58, wLen: 58,
         clash: CLASH_SET2, choose: chooseAttack2, idle: aldricIdleShard }
     ],
     /* states the engine hands straight back to him */
@@ -1689,7 +1689,7 @@ function liftOf(h) { return h / SQUASH; }
 /* the standing heights of the figures, measured in their own upright space */
 const PLAYER_TOP = 48, BOSS_TOP = 74;
 function bossHeadY() {
-  const shr = B.phase2 ? 0.58 : 1;
+  const shr = B.phase2 ? 0.8 : 1;
   return B.y - liftOf(BOSS_TOP * shr + (B.z || 0) + 8);
 }
 function playerHeadY() { return P.y - liftOf(PLAYER_TOP + (P.z || 0)); }
@@ -2093,7 +2093,7 @@ function updatePlayer(dt) {
         const ce = cuts === 1 ? wEnd : wStart + (wEnd - wStart) * ((ci + 0.7) / cuts);
         if (!a.charging && et >= cs && et <= ce && !a['hit' + ci]) {
           const d = dist(P.x, P.y, B.x, B.y);
-          const hitR = B.r + (B.phase2 ? 15 : 0);   // he is smaller in phase 2; your reach is not
+          const hitR = B.r + (B.phase2 ? 8 : 0);    // he is leaner in phase 2; your reach is not
           if (d < reach + hitR && Math.abs(angDiff(a.face, Math.atan2(B.y - P.y, B.x - P.x))) < half + Math.asin(clamp(hitR / Math.max(d, hitR), 0, 1))) {
             a['hit' + ci] = true; a.hitDone = true;
             let out = base / cuts * power;
@@ -2981,8 +2981,8 @@ function drawFloor() {
   ctx.drawImage(ARENA_BAKE, 0, 0, W, H);
   // distance is darkness here — the back of the room barely catches the fire
   const dep = ctx.createLinearGradient(0, ARENA.y - 10, 0, ARENA.y + ARENA.h * 0.62);
-  dep.addColorStop(0, 'rgba(0,0,0,0.58)');
-  dep.addColorStop(0.5, 'rgba(0,0,0,0.2)');
+  dep.addColorStop(0, 'rgba(0,0,0,0.46)');
+  dep.addColorStop(0.5, 'rgba(0,0,0,0.16)');
   dep.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = dep;
   ctx.fillRect(ARENA.x - 40, ARENA.y - 40, ARENA.w + 80, ARENA.h);
@@ -3365,7 +3365,7 @@ function drawBladeBody(white) {
     for (let i = 1; i <= 3; i++) {
       ctx.save();
       ctx.globalAlpha = 0.26 - i * 0.07;
-      ctx.translate(0, -12);
+      ctx.translate(flip * 7, -17);
       ctx.rotate(P.face + trailFrom.ang + trailFrom.step * i);
       drawSword(trailFrom.len, false);
       ctx.restore();
@@ -3477,7 +3477,7 @@ function drawBladeBody(white) {
   ctx.restore();
 
   ctx.save();
-  ctx.translate(0, -12);
+  ctx.translate(flip * 7, -17);            // the sword lives in a hand, not in his sternum
   ctx.rotate(P.face + swordAng);
   drawSword(swordLen, white);
   if (P.act && P.act.type === 'heavy' && P.act.charging && P.act.chargeT > 0.05) {
@@ -3579,10 +3579,10 @@ function drawPairBody(white) {
     angR = 1.5; angL = -1.5;
   }
 
-  const hand = (s) => ({
-    x: Math.cos(P.face) * 2 - Math.sin(P.face) * s * 8,
-    y: Math.sin(P.face) * 2 + Math.cos(P.face) * s * 8
-  });
+  /* two hands, one a little forward and higher than the other — screen-space
+     offsets so the grip stays at the body's sides whichever way he faces */
+  const flip2 = Math.cos(P.face) < 0 ? -1 : 1;
+  const hand = (s) => ({ x: s * flip2 * 8, y: -6 - s * 2.5 });
 
   if (a && a.type === 'parry' && a.t <= 0.2) {
     ctx.save(); ctx.translate(0, -10); ctx.rotate(P.face);
@@ -3756,11 +3756,7 @@ function chargeK() {
 
 function drawPlayer() {
   if (P.dead) {
-    // his last moments were staged upright — undo the floor's tilt for them
-    ctx.save();
-    ctx.translate(0, HORIZON); ctx.scale(1, 1 / SQUASH); ctx.translate(0, -HORIZON);
-    drawPlayerDeath();
-    ctx.restore();
+    drawPlayerDeath();                     // stages its own upright space
     return;
   }
 
@@ -3846,187 +3842,181 @@ function drawPlayer() {
 }
 
 /* the three stages of going down, staged upright */
+/* He goes down the way he stood: on his feet, then on his knees, then on
+   his face. Authored in the same upright space the living figure uses. */
 function drawPlayerDeath() {
-  /* He goes down in stages: the legs give, he pitches onto the stone,
-     and then he simply goes to ash. His sword falls point-first and
-     stays standing — the arena is already full of them. */
   const t = G.screenT, fx = P.deathX, fy = P.deathY, ff = P.deathFace || 0;
+  const pair = CH().id === 'pair';
+  const flip = Math.cos(ff) < 0 ? -1 : 1;
+  const bodyA = clamp(1 - (t - 1.85) / 1.5, 0, 1);
 
-  // the ground shadow flattens and spreads as he falls
-  const spread = clamp(t / 1.55, 0, 1);
+  // the shadow stays in the floor's own space, spreading as he comes down
+  const spread = clamp(t / 1.5, 0, 1);
   ctx.save();
-  ctx.globalAlpha = clamp(1 - (t - 1.8) / 1.7, 0, 1) * 0.45;
+  ctx.globalAlpha = bodyA * 0.5;
   ctx.fillStyle = '#000';
   ctx.beginPath();
-  ctx.ellipse(fx, fy + 6, 14 + spread * 10, 6 + spread * 2, ff, 0, Math.PI * 2);
+  ctx.ellipse(fx + flip * spread * 8, fy + 6, 13 + spread * 12, 5.5 + spread * 2, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
-  const pairDead = CH().id === 'pair';
-  if (pairDead) {
-    // the two scavenged blades fall from opening hands — flat on the stone,
-    // one a beat after the other, the way they were picked up
+  ctx.save();
+  ctx.translate(fx, fy);
+  ctx.scale(1, 1 / SQUASH);                // he falls standing up, not painted on the floor
+
+  /* ---- the weapons reach the stone before he does ---- */
+  if (pair) {
+    // two knives, one a beat after the other, tumbling flat
     const drops = [
-      { at: 0.55, ang: ff + 0.9, off: 17, spin: 2.2, rest: 0.6 },
-      { at: 0.8, ang: ff - 1.2, off: 21, spin: -1.7, rest: -2.4 }
+      { at: 0.55, ox: flip * 14, oy: 2, rest: 0.5 + flip * 0.4, spin: 2.1 },
+      { at: 0.8, ox: flip * 24, oy: 4, rest: -2.3 - flip * 0.3, spin: -1.6 }
     ];
     for (const dr of drops) {
       if (t <= dr.at) continue;
-      const k = clamp((t - dr.at) / 0.35, 0, 1);
+      const k = clamp((t - dr.at) / 0.3, 0, 1);
       const settle = 1 - Math.pow(1 - k, 3);
       ctx.save();
       ctx.globalAlpha = clamp(1 - (t - 4.0) / 1.0, 0, 1);
-      ctx.translate(fx + Math.cos(dr.ang) * dr.off + (1 - settle) * 4,
-                    fy + Math.sin(dr.ang) * dr.off + 3 - (1 - settle) * 7);
+      ctx.translate(dr.ox + (1 - settle) * flip * 3, dr.oy - (1 - settle) * 14);
       ctx.rotate(dr.rest + (1 - settle) * dr.spin);
-      ctx.scale(1, 0.85);                 // lying flat, not standing
-      drawShortBlade(20, false);
+      ctx.scale(1, 0.6);                   // lying flat, foreshortened
+      drawShortBlade(19, false);
       ctx.restore();
     }
   } else if (t > 0.6) {
-    // the given sword, dropped and driven point-first into the floor
+    // the given sword, dropped point-first, standing in the stone beside him
     const k = clamp((t - 0.6) / 0.4, 0, 1);
     const settle = 1 - Math.pow(1 - k, 3);
     ctx.save();
     ctx.globalAlpha = clamp(1 - (t - 4.0) / 1.0, 0, 1);
-    ctx.translate(fx + Math.cos(ff + 1.1) * 20, fy + Math.sin(ff + 1.1) * 20 + 2);
-    ctx.rotate(Math.PI / 2 + (1 - settle) * 1.4);
+    ctx.translate(flip * 20, 2 - (1 - settle) * 10);
+    ctx.rotate(Math.PI / 2 + flip * (1 - settle) * 1.2);
     drawSwordProfile(ctx, 30, {});
     ctx.restore();
   }
 
-  // the body
-  const bodyA = clamp(1 - (t - 1.85) / 1.5, 0, 1);
+  /* ---- the body, in three beats ---- */
   if (bodyA > 0) {
-    let sink, flat, lean, tip;
-    if (t < 0.75) {                       // the legs give out — he holds a moment on his knees
-      const k = t / 0.75;
-      const e = 1 - Math.pow(1 - k, 2);
-      sink = e * 4; flat = e * 0.3; lean = e * 0.2; tip = e * 0.18;
-    } else if (t < 1.55) {                // then pitches forward onto the stone
-      const k = (t - 0.75) / 0.8;
-      const e = k * k;                    // gathering speed as he goes over
-      sink = 4 + e * 6; flat = 0.3 + e * 0.62; lean = 0.2 + e * 0.55; tip = 0.18 + e * 1.0;
+    let sink, pitch, fold;
+    if (t < 0.7) {                         // the knees give
+      const k = t / 0.7, e = 1 - Math.pow(1 - k, 2);
+      sink = e * 11; pitch = e * 0.22; fold = e;
+    } else if (t < 1.5) {                  // and he pitches onto his face
+      const k = (t - 0.7) / 0.8, e = k * k;
+      sink = 11 + e * 9; pitch = 0.22 + e * 1.28; fold = 1;
     } else {
-      sink = 10; flat = 0.92; lean = 0.75; tip = 1.18;
+      sink = 20; pitch = 1.5; fold = 1;
     }
+
     ctx.save();
     ctx.globalAlpha = bodyA;
-    ctx.translate(fx + Math.cos(ff) * tip * 7, fy + sink + Math.sin(ff) * tip * 7);
-    ctx.rotate(ff + lean * 0.25);
-    ctx.scale(1 - flat * 0.1 + tip * 0.16, 1 - flat * 0.66);   // stretches out as he goes flat
+    ctx.translate(flip * pitch * 9, -20 + sink);   // hips drop as the legs go
+    ctx.scale(flip, 1);
+    ctx.rotate(pitch);                     // rotating over the knees, down to the stone
 
-    if (pairDead) {
-      // the same man in the other clothes: torn short cloak pooling out
+    if (pair) {
+      // folded shins under him
+      ctx.strokeStyle = '#4a443c'; ctx.lineWidth = 4.2;
+      ctx.beginPath(); ctx.moveTo(-2, 1); ctx.lineTo(-6 - fold * 3, 8); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(3, 1); ctx.lineTo(6 + fold * 2, 9); ctx.stroke();
+      // the slight body, cloak settling over it
+      ctx.fillStyle = '#5f574d';
+      ctx.beginPath(); ctx.ellipse(0, -6, 7.5, 9, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#221d19'; ctx.lineWidth = 1.2; ctx.stroke();
       ctx.fillStyle = '#4a3630';
       ctx.beginPath();
-      ctx.moveTo(-1, -8);
-      ctx.quadraticCurveTo(-12, -9 - flat * 4, -19 - flat * 6, -4);
-      ctx.lineTo(-15 - flat * 6, -1);
-      ctx.lineTo(-20 - flat * 6, 1);
-      ctx.lineTo(-14 - flat * 6, 4);
-      ctx.quadraticCurveTo(-12, 8 + flat * 4, -1, 8);
+      ctx.moveTo(-7, -12);
+      ctx.quadraticCurveTo(-12, -2 + fold * 4, -8, 8 + fold * 3);
+      ctx.lineTo(-3, 6); ctx.lineTo(-6, 10 + fold * 2); ctx.lineTo(0, 8);
+      ctx.quadraticCurveTo(4, 0, 5, -10);
       ctx.closePath(); ctx.fill();
       ctx.strokeStyle = '#241a17'; ctx.lineWidth = 1; ctx.stroke();
-
-      // the narrow leather torso and the one looted pauldron
-      const bgP = ctx.createRadialGradient(-2, -2, 1.5, 0, 0, 11);
-      bgP.addColorStop(0, '#8d8377'); bgP.addColorStop(0.55, '#5f574d'); bgP.addColorStop(1, '#3a342e');
-      ctx.fillStyle = bgP;
-      ctx.beginPath(); ctx.ellipse(0, 0, 10, 8.5, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#221d19'; ctx.lineWidth = 1.3; ctx.stroke();
-      ctx.fillStyle = '#9aa0a8';
-      ctx.beginPath(); ctx.arc(-1, -8.5, 4.6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      ctx.strokeStyle = 'rgba(224,216,198,0.6)'; ctx.lineWidth = 1.4;
-      ctx.beginPath(); ctx.moveTo(-5, -7); ctx.lineTo(4, 6); ctx.stroke();
-
-      // the hood settles over the face; the two dull points go out
-      ctx.save();
-      ctx.rotate(lean * 0.5);
+      // the hood, and the two points going out inside it
       ctx.fillStyle = '#4a3630';
-      ctx.beginPath();
-      ctx.moveTo(13, 0);
-      ctx.quadraticCurveTo(9, -9.5, -2, -7.5);
-      ctx.quadraticCurveTo(-6, 0, -2, 7.5);
-      ctx.quadraticCurveTo(9, 9.5, 13, 0);
-      ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = '#241a17'; ctx.lineWidth = 1.1; ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(0, -16, 7, 6.4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#241a17'; ctx.stroke();
       ctx.fillStyle = '#100d0c';
-      ctx.beginPath(); ctx.ellipse(7.5, 0, 4.6, 4.4, 0, 0, Math.PI * 2); ctx.fill();
-      const eyeP = clamp(1 - t / 1.45, 0, 1);
-      if (eyeP > 0.02) {
-        ctx.globalAlpha = bodyA * eyeP * 0.55;
-        ctx.drawImage(GLOW_RED, 4, -6, 12, 12);
+      ctx.beginPath(); ctx.ellipse(2.5, -15.5, 3.6, 3.4, 0, 0, Math.PI * 2); ctx.fill();
+      const eye = clamp(1 - t / 1.4, 0, 1);
+      if (eye > 0.02) {
+        ctx.globalAlpha = bodyA * eye * 0.55;
+        ctx.drawImage(GLOW_RED, -2, -21, 11, 11);
         ctx.globalAlpha = bodyA;
-        ctx.fillStyle = `rgba(226,124,100,${eyeP * 0.85})`;
-        ctx.beginPath(); ctx.arc(8.6, -1.7, 0.95, 0, Math.PI * 2); ctx.fill();
-        ctx.beginPath(); ctx.arc(8.6, 1.7, 0.95, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = `rgba(226,124,100,${eye * 0.9})`;
+        ctx.beginPath(); ctx.arc(3.4, -16.6, 0.8, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(3.4, -14.4, 0.8, 0, Math.PI * 2); ctx.fill();
       }
-      ctx.restore();
     } else {
-      // cloak, pooling out behind him
+      // greaves folded beneath the fauld
+      ctx.fillStyle = '#4a5164'; ctx.strokeStyle = '#252c3c'; ctx.lineWidth = 1.1;
+      ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(-1, 0); ctx.lineTo(-3 - fold * 4, 9); ctx.lineTo(-8 - fold * 4, 9); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(2, 0); ctx.lineTo(7, 0); ctx.lineTo(9 + fold * 2, 9); ctx.lineTo(4 + fold * 2, 9); ctx.closePath(); ctx.fill(); ctx.stroke();
+      // cape pooling with him
       ctx.fillStyle = '#2d3a63';
       ctx.beginPath();
-      ctx.moveTo(-2, -9);
-      ctx.quadraticCurveTo(-16, -10 - flat * 5, -25 - flat * 8, -4);
-      ctx.lineTo(-25 - flat * 8, 5);
-      ctx.quadraticCurveTo(-16, 10 + flat * 5, -2, 9);
+      ctx.moveTo(-6, -22);
+      ctx.quadraticCurveTo(-14, -10 + fold * 6, -10, 6 + fold * 5);
+      ctx.lineTo(-4, 3); ctx.lineTo(-7, 9 + fold * 3); ctx.lineTo(0, 5);
+      ctx.quadraticCurveTo(5, -8, 6, -20);
       ctx.closePath(); ctx.fill();
-
-      // torso
-      const bg = ctx.createRadialGradient(-3, -3, 2, 0, 0, 13);
-      bg.addColorStop(0, '#c9d2e2'); bg.addColorStop(0.6, '#98a3ba'); bg.addColorStop(1, '#5f6981');
-      ctx.fillStyle = bg;
-      ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#2b3140'; ctx.lineWidth = 1.5; ctx.stroke();
-
-      // pauldrons
-      ctx.fillStyle = '#8894ab';
-      ctx.beginPath(); ctx.arc(-1, -10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      ctx.beginPath(); ctx.arc(-1, 10.5, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-
-      // helm, tipping forward until it rests on the ground
+      ctx.strokeStyle = '#1a2138'; ctx.lineWidth = 1.1; ctx.stroke();
+      // the cuirass
+      const cg = ctx.createLinearGradient(0, -22, 0, -2);
+      cg.addColorStop(0, '#b7c1d6'); cg.addColorStop(1, '#7d87a1');
+      ctx.fillStyle = cg;
+      ctx.beginPath(); ctx.moveTo(-8, -2); ctx.lineTo(8, -2); ctx.lineTo(9.4, -12); ctx.lineTo(6.6, -20); ctx.lineTo(-6.6, -20); ctx.lineTo(-9.4, -12); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#333a4b'; ctx.lineWidth = 1.3; ctx.stroke();
+      // pauldrons at the slumped shoulders
+      ctx.fillStyle = '#98a3ba';
+      ctx.beginPath(); ctx.ellipse(-7.5, -18.5, 4.6, 3.6, 0.3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(7.5, -18.5, 4.6, 3.6, -0.3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      // the helm, bowing with the pitch, its light going out
       ctx.save();
-      ctx.rotate(lean * 0.5);
-      const hg = ctx.createLinearGradient(2, 0, 16, 0);
-      hg.addColorStop(0, '#98a3ba'); hg.addColorStop(1, '#d7deeb');
+      ctx.translate(1.5, -24);
+      ctx.rotate(0.24 * fold + pitch * 0.2);
+      const hg = ctx.createLinearGradient(-5, 0, 6, 0);
+      hg.addColorStop(0, '#aab5cc'); hg.addColorStop(1, '#eef2fa');
       ctx.fillStyle = hg;
-      ctx.beginPath(); ctx.moveTo(19, 0); ctx.lineTo(2, -8.5); ctx.lineTo(6, 0); ctx.lineTo(2, 8.5); ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = '#232938'; ctx.lineWidth = 1.2; ctx.stroke();
-      // the light behind the visor goes out as he falls
-      const eye = clamp(1 - t / 1.45, 0, 1);
+      ctx.beginPath(); ctx.moveTo(-5.4, 4); ctx.lineTo(-5.4, -4.6); ctx.lineTo(-2.6, -7.4); ctx.lineTo(3.4, -7.4); ctx.lineTo(5.8, -4.6); ctx.lineTo(5.8, 4); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#252c3c'; ctx.lineWidth = 1.2; ctx.stroke();
+      const eye = clamp(1 - t / 1.4, 0, 1);
       if (eye > 0.02) {
-        ctx.globalAlpha = bodyA * eye * 0.7;
-        ctx.drawImage(GLOW_BLUE, 3, -7, 14, 14);
+        ctx.globalAlpha = bodyA * eye * 0.6;
+        ctx.drawImage(GLOW_BLUE, -2, -5, 11, 11);
         ctx.globalAlpha = bodyA;
         ctx.strokeStyle = `rgba(159,199,255,${eye})`;
-        ctx.lineWidth = 1.8;
-        ctx.beginPath(); ctx.moveTo(10, -3.6); ctx.lineTo(14, 0); ctx.lineTo(10, 3.6); ctx.stroke();
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(1.2, -3.4); ctx.lineTo(4.4, -1.2); ctx.lineTo(1.2, 1); ctx.stroke();
+      } else {
+        ctx.strokeStyle = 'rgba(20,24,34,0.9)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(1.2, -3.4); ctx.lineTo(4.4, -1.2); ctx.lineTo(1.2, 1); ctx.stroke();
       }
       ctx.restore();
     }
     ctx.restore();
   }
 
-  // and what is left of him leaves
+  /* ---- and what is left of him leaves, straight up ---- */
   const wt = clamp(t - 2.0, 0, 3.2);
   if (wt > 0 && wt < 3.2) {
-    const wy = fy - 10 - wt * 26;
+    const wy = -26 - wt * 30;
     const wa = clamp(1 - wt / 3.2, 0, 0.85) * clamp(wt / 0.4, 0, 1);
-    const wx = fx + Math.sin(t * 2.0) * 9;
+    const wx = Math.sin(t * 2.0) * 8;
     ctx.globalAlpha = wa;
-    ctx.drawImage(pairDead ? GLOW_RED : GLOW_BLUE, wx - 14, wy - 14, 28, 28);
+    ctx.drawImage(pair ? GLOW_RED : GLOW_BLUE, wx - 13, wy - 13, 26, 26);
     ctx.globalAlpha = wa * 0.9;
-    ctx.fillStyle = pairDead ? '#f0d9cf' : '#dceaff';
-    ctx.beginPath(); ctx.arc(wx, wy, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = pair ? '#f0d9cf' : '#dceaff';
+    ctx.beginPath(); ctx.arc(wx, wy, 2.8, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
   }
+  ctx.restore();
 }
 
 function drawBoss() {
   const dying = B.state === 'dying';
   const carving = B.state === 'carve';
-  let alpha = 1;
+  // the deeper into the room he stands, the more the dark has him
+  let alpha = 0.78 + 0.22 * clamp((B.y - ARENA.y) / (ARENA.h * 0.6), 0, 1);
   if (dying) alpha = clamp(1 - B.dieT / 1.3, 0, 1);
   if (G.screen === 'victory' && !carving) alpha = 0;
   if (alpha <= 0) return;
@@ -4038,8 +4028,8 @@ function drawBoss() {
   /* out of the armor he is a much smaller man — the shrink eases in as he
      rises from the break, and the shard stays every bit as long */
   let shr = 1;
-  if (B.phase2) shr = 0.58;
-  else if (B.state === 'break') shr = 1 - 0.42 * clamp((B.stateT - 2.35) / 0.7, 0, 1);
+  if (B.phase2) shr = 0.8;                       // lighter, quicker — but never smaller than you
+  else if (B.state === 'break') shr = 1 - 0.2 * clamp((B.stateT - 2.35) / 0.7, 0, 1);
 
   // shadow — pooled on the stone, spreading and fading as he leaves it
   const zsh = 1 + (B.z || 0) / 70;
@@ -4342,7 +4332,7 @@ function drawBoss() {
 
   // ---- the sceptre-maul: full size always (the shard never shrinks) ----
   ctx.save();
-  ctx.translate(0, B.phase2 ? -14 : -22);
+  ctx.translate(flipB * 9 * shr, B.phase2 ? -20 : -26);   // gripped at the hand, out from the body
   ctx.rotate(B.face + B.wOff);
   const L = B.wLen;
   if (!B.broken) {
@@ -5015,6 +5005,16 @@ function drawWorld() {
   drawDamageNumbers();
   drawFogWall();
   ctx.restore();                           // done with the floor plane
+
+  // the dark of the vault presses down on whatever stands tall enough to reach it
+  {
+    const seam = projY(ARENA.y);
+    const tv = ctx.createLinearGradient(0, seam - 96, 0, seam + 44);
+    tv.addColorStop(0, 'rgba(4,5,9,0.62)');
+    tv.addColorStop(1, 'rgba(4,5,9,0)');
+    ctx.fillStyle = tv;
+    ctx.fillRect(-40, -40, W + 80, seam + 88);
+  }
 
   // the slab has a thickness — the lip of it, standing up at the near edge
   {
