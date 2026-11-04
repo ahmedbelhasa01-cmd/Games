@@ -3,14 +3,17 @@ import { FixedStepper } from './physics';
 import { Camera, drawBackground } from './view';
 import type { Level, Phase } from './levels/level';
 import { InertiaLevel } from './levels/inertia';
+import { CargoLevel } from './levels/cargo';
+import { RecoilLevel } from './levels/recoil';
+import { FinaleLevel } from './levels/finale';
 
-const makers: (() => Level)[] = [() => new InertiaLevel()];
+const makers: (() => Level)[] = [() => new InertiaLevel(), () => new CargoLevel(), () => new RecoilLevel(), () => new FinaleLevel()];
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>('c');
 const ctx = canvas.getContext('2d')!;
 const ui = {
-  title: $('title'), goal: $('goal'), readouts: $('readouts'), hint: $('hint'),
+  title: $('title'), goal: $('goal'), readouts: $('readouts'), hint: $('hint'), ctl: $('ctl'),
   go: $<HTMLButtonElement>('go'), card: $('card'), head: $('card-head'), line: $('card-line'), law: $('card-law'),
   retry: $<HTMLButtonElement>('retry'), next: $<HTMLButtonElement>('next'),
 };
@@ -28,6 +31,7 @@ function setPhase(p: Phase): void {
   ui.goal.classList.toggle('predict', p === 'predict');
   ui.goal.textContent = p === 'predict' ? level.predictPrompt : level.goal;
   ui.go.hidden = p !== 'setup';
+  ui.ctl.hidden = p !== 'setup' || !level.controls;
   ui.card.hidden = true;
   if (p === 'sim') { stepper.reset(); level.start(); }
 }
@@ -35,25 +39,32 @@ function setPhase(p: Phase): void {
 function loadLevel(i: number): void {
   idx = i;
   level = makers[i]();
-  ui.title.textContent = level.title;
+  ui.title.textContent = `${level.title}  ·  ${i + 1}/${makers.length}`;
+  ui.ctl.replaceChildren(...(level.controls ? [level.controls()] : []));
+  try { history.replaceState(null, '', `#level${i + 1}`); } catch { /* ignore */ }
   setPhase('setup');
   resize();
 }
 
 function showCard(): void {
   const o = level.outcome()!;
-  ui.card.className = o.win ? 'win' : 'lose';
+  ui.card.className = o.kind === 'fail' ? 'lose' : 'win';
   ui.head.textContent = o.headline;
   ui.line.textContent = o.line;
   ui.law.textContent = level.law;
-  ui.next.hidden = !o.win || makers.length === 1;
-  ui.next.textContent = idx + 1 < makers.length ? 'Next level' : 'Play again';
-  ui.retry.textContent = o.win ? 'Replay' : 'Try again';
+  ui.law.hidden = o.kind === 'step';
+  ui.next.hidden = o.kind === 'fail';
+  ui.next.textContent = o.kind === 'step' ? level.stepButton ?? 'Continue' : idx + 1 < makers.length ? 'Next level' : 'Play again';
+  ui.retry.hidden = o.kind === 'step';
+  ui.retry.textContent = o.kind === 'win' ? 'Replay' : 'Try again';
   ui.card.hidden = false;
 }
 
 function retry(): void { level.reset(); setPhase('setup'); }
-function next(): void { loadLevel((idx + 1) % makers.length); }
+function next(): void {
+  if (level.outcome()?.kind === 'step' && level.nextStage) { level.nextStage(); setPhase('setup'); return; }
+  loadLevel((idx + 1) % makers.length);
+}
 function go(): void { if (phase === 'setup' && level.canGo()) setPhase('predict'); }
 
 ui.go.addEventListener('click', go);
@@ -63,9 +74,10 @@ window.addEventListener('keydown', (e) => {
   if (e.key === ' ' || e.key === 'Enter') {
     e.preventDefault();
     if (phase === 'setup') go();
-    else if (phase === 'reveal' && !ui.card.hidden) (level.outcome()?.win ? next : retry)();
+    else if (phase === 'reveal' && !ui.card.hidden) (level.outcome()?.kind === 'fail' ? retry : next)();
   } else if (e.key === 'r' || e.key === 'R') retry();
-  else if (e.key === 'n' || e.key === 'N') next();
+  else if (e.key === 'n' || e.key === 'N') loadLevel((idx + 1) % makers.length);
+  else if (e.key >= '1' && e.key <= String(makers.length)) loadLevel(Number(e.key) - 1);
 });
 
 function pointer(kind: 'down' | 'move' | 'up', e: PointerEvent): void {
@@ -84,7 +96,7 @@ function resize(): void {
   canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const narrow = w < 640;
-  cam.fit(level.bounds, w, h, narrow ? 150 : 120, narrow ? 90 : 96);
+  cam.fit(level.bounds, w, h, narrow ? 150 : 120, narrow ? 120 : 100);
 }
 window.addEventListener('resize', resize);
 
@@ -96,14 +108,14 @@ function frame(now: number): void {
 
   if (phase === 'predict' && predictedAt && now - predictedAt > 450) { predictedAt = 0; setPhase('sim'); }
   if (phase === 'sim') {
-    stepper.advance(dt, (h) => level.tick(h));
+    stepper.advance(dt * (level.timeScale?.() ?? 1), (h) => level.tick(h));
     if (level.outcome()) { phase = 'reveal'; revealAt = now; }
   }
   if (phase === 'reveal' && ui.card.hidden && now - revealAt > 350) showCard();
 
   ui.hint.textContent = phase === 'setup' ? level.setupHint() : phase === 'sim' ? 'Watch F and v.' : '';
   const ro = level.readouts(phase);
-  const html = ro.map((r) => `<div class="ro${r.hot ? ' hot' : ''}${r.label === 'v' ? ' v' : ''}"><b>${r.label}</b>${r.value}</div>`).join('');
+  const html = ro.map((r) => `<div class="ro${r.hot ? ` hot ${r.tone ?? 'force'}` : ''}${r.tone === 'vel' ? ' v' : ''}"><b>${r.label}</b>${r.value}</div>`).join('');
   if (html !== lastRo) { ui.readouts.innerHTML = html; lastRo = html; }
 
   drawBackground(ctx, cam);
@@ -111,5 +123,12 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
 }
 
-loadLevel(0);
+const m = /^#level(\d)$/.exec(location.hash);
+loadLevel(m ? Math.min(makers.length, Math.max(1, Number(m[1]))) - 1 : 0);
 requestAnimationFrame(frame);
+
+// Test/presenter hook: world→screen mapping for automated playthroughs.
+(window as unknown as { __game: unknown }).__game = {
+  toScreen: (x: number, y: number) => [cam.sx(x), cam.sy(y)],
+  phase: () => phase,
+};

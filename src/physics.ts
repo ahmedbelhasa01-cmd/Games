@@ -63,3 +63,19 @@ export class FixedStepper {
   }
   reset(): void { this.acc = 0; }
 }
+
+/**
+ * One fixed step of a throw. The thrower pushes `obj` along unit direction (dx, dy) with force F,
+ * and `obj` pushes back equally (3rd law), until obj's speed relative to the thrower reaches u.
+ * The last step's force is trimmed so release is exactly at u. Returns true when released.
+ * Caller must step() both bodies afterwards.
+ */
+export function throwStep(thrower: Body, obj: Body, dx: number, dy: number, u: number, F: number, dt = DT): boolean {
+  const rel = (obj.v.x - thrower.v.x) * dx + (obj.v.y - thrower.v.y) * dy;
+  const need = u - rel;
+  if (need <= 0) return true;
+  const gain = F * (1 / obj.m + 1 / thrower.m) * dt;
+  const f = gain > need ? (F * need) / gain : F;
+  interact(thrower, obj, f * dx, f * dy);
+  return gain >= need;
+}

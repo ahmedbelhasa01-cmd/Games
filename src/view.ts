@@ -106,3 +106,51 @@ export function label(
   ctx.textBaseline = base;
   ctx.fillText(text, x, y);
 }
+
+/** Metre ruler along y = 0 from x0..x1 (ticks every 1 m, labels every 2 m). */
+export function ruler(ctx: CanvasRenderingContext2D, cam: Camera, x0: number, x1: number, note?: string): void {
+  const ty = cam.sy(0);
+  ctx.strokeStyle = 'rgba(160,180,230,0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cam.sx(x0), ty); ctx.lineTo(cam.sx(x1), ty); ctx.stroke();
+  ctx.lineWidth = 1;
+  for (let x = Math.ceil(Math.max(0, x0)); x <= x1; x++) {
+    const px = cam.sx(x), big = x % 2 === 0;
+    ctx.beginPath(); ctx.moveTo(px, ty + 4); ctx.lineTo(px, ty + (big ? 14 : 9)); ctx.stroke();
+    if (big) label(ctx, x === 0 ? '0 m' : `${x}`, px, ty + 26, C.dim, 12, 'center', 'middle', 500);
+  }
+  if (note) label(ctx, note, cam.sx(x0) + 4, ty + 46, 'rgba(125,139,176,0.6)', 12, 'left', 'middle', 500);
+}
+
+/** Pulsing edge marker for a body that has left the screen. */
+export function offscreenMarker(ctx: CanvasRenderingContext2D, cam: Camera, p: Vec, v: Vec, now: number, padTop = 110, padBottom = 90): void {
+  const sx = cam.sx(p.x), sy = cam.sy(p.y);
+  const ex = Math.min(cam.w - 16, Math.max(16, sx));
+  const ey = Math.min(cam.h - padBottom, Math.max(padTop, sy));
+  const ang = Math.atan2(sy - ey || 0.0001, sx - ex || 0.0001);
+  ctx.save();
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 120);
+  ctx.fillStyle = C.vel;
+  ctx.translate(ex, ey); ctx.rotate(ang);
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-18, -12); ctx.lineTo(-18, 12); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  const right = ex > cam.w / 2;
+  const tx = ex + (right ? -28 : 28);
+  const ty = Math.min(cam.h - padBottom - 16, Math.max(padTop + 16, ey));
+  const sp = Math.hypot(v.x, v.y);
+  label(ctx, 'still going', tx, ty - 11, C.ink, 15, right ? 'right' : 'left', 'middle', 800);
+  label(ctx, `v = ${sp.toFixed(2)} m/s`, tx, ty + 10, C.vel, 14, right ? 'right' : 'left', 'middle', 700);
+}
+
+/** Translucent "your guess" marker. */
+export function ghost(ctx: CanvasRenderingContext2D, cam: Camera, p: Vec, r: number, missed: boolean): void {
+  const gx = cam.sx(p.x), gy = cam.sy(p.y);
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  ctx.setLineDash([5, 5]);
+  ctx.strokeStyle = missed ? C.bad : '#dfe6ff'; ctx.lineWidth = 2;
+  ctx.fillStyle = missed ? 'rgba(255,93,108,0.18)' : 'rgba(223,230,255,0.10)';
+  ctx.beginPath(); ctx.arc(gx, gy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  label(ctx, missed ? 'your guess: wrong' : 'your guess', gx, gy - r - 12, missed ? C.bad : C.ghost, 13, 'center', 'middle', 700);
+}

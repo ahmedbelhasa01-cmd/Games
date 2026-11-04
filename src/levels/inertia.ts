@@ -116,7 +116,7 @@ export class InertiaLevel implements Level {
   private finishFlown(): void {
     const v = Math.abs(this.puck.v.x).toFixed(2);
     this.result = {
-      win: false,
+      kind: 'fail',
       headline: this.guess !== null ? `You said ${fmt(this.guess)} m. It never stopped.` : 'It never stopped.',
       line: `Force was zero, so speed stayed ${v} m/s.`,
     };
@@ -125,11 +125,11 @@ export class InertiaLevel implements Level {
   private finishRest(): void {
     const x = this.puck.p.x;
     if (x >= DOCK.x0 && x <= DOCK.x1) {
-      this.result = { win: true, headline: `Docked at ${fmt(x)} m.`, line: 'Starting took a push. Stopping took a push back.' };
+      this.result = { kind: 'win', headline: `Docked at ${fmt(x)} m.`, line: 'Starting took a push. Stopping took a push back.' };
     } else if (Math.abs(x) < 1e-6 && !this.pulses.some((p) => p.fired)) {
-      this.result = { win: false, headline: 'It never moved.', line: 'No force, no change. Rest stays rest.' };
+      this.result = { kind: 'fail', headline: 'It never moved.', line: 'No force, no change. Rest stays rest.' };
     } else {
-      this.result = { win: false, headline: `Stopped at ${fmt(x)} m. Missed the dock.`, line: 'It stopped only where you pushed back.' };
+      this.result = { kind: 'fail', headline: `Stopped at ${fmt(x)} m. Missed the dock.`, line: 'It stopped only where you pushed back.' };
     }
   }
 
@@ -155,7 +155,7 @@ export class InertiaLevel implements Level {
     // Dock
     const dx0 = cam.sx(DOCK.x0), dx1 = cam.sx(DOCK.x1);
     const dh = 1.3 * s;
-    const won = this.result?.win;
+    const won = this.result?.kind === 'win';
     ctx.save();
     ctx.fillStyle = won ? 'rgba(70,224,154,0.18)' : 'rgba(56,200,255,0.10)';
     ctx.strokeStyle = won ? C.vel : C.dock;

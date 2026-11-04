@@ -61,3 +61,37 @@ describe('physics', () => {
     expect(() => body(0)).toThrow();
   });
 });
+
+import { throwStep } from '../src/physics';
+describe('throw', () => {
+  it('releases at relative speed u, recoil = m·u/(M+m), momentum zero', () => {
+    const you = body(70), tank = body(20, 0.5, 0);
+    let released = false, n = 0;
+    while (!released && n < 10_000) { released = throwStep(you, tank, -1, 0, 8, 300); step(you); step(tank); n++; }
+    expect(released).toBe(true);
+    expect(tank.v.x - you.v.x).toBeCloseTo(-8, 10);
+    expect(you.v.x).toBeCloseTo((20 * 8) / 90, 10);
+    const p = momentum([you, tank]);
+    expect(p.x).toBeCloseTo(0, 10);
+    expect(p.y).toBeCloseTo(0, 10);
+  });
+  it('heavier object gives bigger recoil at the same throw speed', () => {
+    const recoil = (m: number) => {
+      const you = body(70), o = body(m);
+      while (!throwStep(you, o, 1, 0, 8, 300)) { step(you); step(o); }
+      step(you); step(o);
+      return -you.v.x;
+    };
+    expect(recoil(20)).toBeGreaterThan(recoil(10));
+    expect(recoil(10)).toBeGreaterThan(recoil(2));
+  });
+  it('accelerate F for T then brake F for T travels exactly (F/m)·T²', () => {
+    for (const [F, m] of [[20, 2], [20, 4], [40, 4], [10, 1]]) {
+      const b = body(m);
+      for (let i = 0; i < 120; i++) { applyForce(b, F, 0); step(b); }
+      for (let i = 0; i < 120; i++) { applyForce(b, -F, 0); step(b); }
+      expect(b.p.x).toBeCloseTo(F / m, 9);
+      expect(Math.abs(b.v.x)).toBeLessThan(1e-9);
+    }
+  });
+});
