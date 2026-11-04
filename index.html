@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Newton's Laws</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%23c6d2f5'/></svg>" />
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <header id="top">
+    <div id="title"></div>
+    <div id="goal"></div>
+    <div id="readouts"></div>
+  </header>
+  <footer id="bottom">
+    <div id="hint"></div>
+    <button id="go" type="button">GO</button>
+  </footer>
+  <section id="card" hidden>
+    <div id="card-head"></div>
+    <div id="card-line"></div>
+    <div id="card-law"></div>
+    <div id="card-btns">
+      <button id="retry" type="button">Try again</button>
+      <button id="next" type="button">Next level</button>
+    </div>
+  </section>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
